@@ -182,6 +182,19 @@ const STYLE = `
   .sot .agenda-event { padding: 9px 12px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line-soft); margin-bottom: 8px; cursor: pointer; }
   .sot .agenda-event:hover { border-color: var(--text-faint); }
 
+  .sot .form-input, .sot .form-select, .sot .form-textarea { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+    padding: 7px 10px; font-size: 12.5px; color: var(--text); outline: none; font-family: inherit; }
+  .sot .form-input:focus, .sot .form-select:focus, .sot .form-textarea:focus { border-color: var(--signal-info); }
+  .sot .form-textarea { resize: vertical; min-height: 56px; }
+  .sot .form-row { margin-bottom: 12px; }
+  .sot .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+  .sot .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .sot .btn.primary:hover { background: #b0243a; }
+  .sot .btn.danger { background: var(--signal-crit-soft); border-color: rgba(229,72,77,0.4); color: var(--signal-crit); }
+  .sot .del-x { color: var(--text-faint); cursor: pointer; flex-shrink: 0; }
+  .sot .del-x:hover { color: var(--signal-crit); }
+  .sot .fab { position: fixed; z-index: 30; }
+
   @media (max-width: 900px) {
     .sot .sidebar { position: fixed; z-index: 60; height: 100%; transform: translateX(-100%); transition: transform .2s; }
     .sot .sidebar.open { transform: translateX(0); }
@@ -493,20 +506,24 @@ export default function SponsorshipTracker() {
   const [feedExpanded, setFeedExpanded] = useState(false);
   const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [newRequestOpen, setNewRequestOpen] = useState(false);
+  const [editMode, setEditMode] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState(false);
 
   // Load persisted acknowledge state + threshold settings on mount
   useEffect(() => {
-    try {
-      const a = localStorage.getItem("sot:acknowledged");
-      if (a) setDismissed(JSON.parse(a));
-    } catch (e) { /* no saved acknowledgements yet */ }
-    try {
-      const t = localStorage.getItem("sot:thresholds");
-      if (t) setThresholds({ ...DEFAULT_THRESHOLDS, ...JSON.parse(t) });
-    } catch (e) { /* no saved thresholds yet */ }
-    setLoaded(true);
+    (async () => {
+      try {
+        const a = await window.storage.get("acknowledged", false);
+        if (a && a.value) setDismissed(JSON.parse(a.value));
+      } catch (e) { /* no saved acknowledgements yet */ }
+      try {
+        const t = await window.storage.get("thresholds", false);
+        if (t && t.value) setThresholds({ ...DEFAULT_THRESHOLDS, ...JSON.parse(t.value) });
+      } catch (e) { /* no saved thresholds yet */ }
+      setLoaded(true);
+    })();
   }, []);
 
   // Keep the module-level engine config in sync every render (cheap plain assignment)
@@ -515,16 +532,20 @@ export default function SponsorshipTracker() {
   // Persist acknowledged state whenever it changes (after initial load)
   useEffect(() => {
     if (!loaded) return;
-    try {
-      localStorage.setItem("sot:acknowledged", JSON.stringify(dismissed));
-      setSaveError(false);
-    } catch (e) { setSaveError(true); }
+    (async () => {
+      try {
+        const res = await window.storage.set("acknowledged", JSON.stringify(dismissed), false);
+        setSaveError(!res);
+      } catch (e) { setSaveError(true); }
+    })();
   }, [dismissed, loaded]);
 
   // Persist threshold settings whenever they change (after initial load)
   useEffect(() => {
     if (!loaded) return;
-    try { localStorage.setItem("sot:thresholds", JSON.stringify(thresholds)); } catch (e) { /* best effort */ }
+    (async () => {
+      try { await window.storage.set("thresholds", JSON.stringify(thresholds), false); } catch (e) { /* best effort */ }
+    })();
   }, [thresholds, loaded]);
 
   const allFollowUpsRaw = useMemo(() => {
@@ -567,8 +588,63 @@ export default function SponsorshipTracker() {
     ).slice(0, 8);
   }, [query, sponsorships]);
 
-  function openDetail(id) { setSelectedId(id); setDetailTab("overview"); }
-  function closeDetail() { setSelectedId(null); }
+  function openDetail(id) { setSelectedId(id); setDetailTab("overview"); setEditMode(false); }
+  function closeDetail() { setSelectedId(null); setEditMode(false); }
+
+  function nextRequestId() {
+    const nums = sponsorships.map(s => parseInt((s.requestId.match(/(\d+)$/) || [0, 0])[1], 10));
+    const max = nums.length ? Math.max(...nums) : 0;
+    return `SP-2026-${String(max + 1).padStart(3, "0")}`;
+  }
+
+  function createSponsorship(data) {
+    const id = "sp-" + Date.now();
+    const newSp = {
+      id, requestId: nextRequestId(), eventName: data.eventName || "Untitled Event", organizer: data.organizer || "Unknown Organizer",
+      sponsorOrgId: null, eventType: data.eventType || "", region: data.region || "", sponsorAmount: Number(data.sponsorAmount) || 0,
+      sponsorshipType: data.sponsorshipType || "", stage: "New Request", stageEnteredDate: TODAY, receivedDate: TODAY,
+      eventDate: data.eventDate ? new Date(data.eventDate + "T00:00:00") : TODAY,
+      memoNumber: "", budgetCode: "", background: data.background || "", benefits: "", justification: "", duration: "",
+      deliverables: [], payment: { invoiceStatus: "N/A", prStatus: "Not Started", poStatus: "Not Started", paymentStatus: "N/A", paymentDueDate: null, financeFollowUpDate: null },
+      connectivity: null, monthlyReportDone: false, notes: "", taskProgress: {},
+    };
+    setSponsorships(prev => [newSp, ...prev]);
+    setNewRequestOpen(false);
+    openDetail(id);
+  }
+
+  function updateFields(spId, patch) {
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, ...patch } : s));
+  }
+  function updatePayment(spId, patch) {
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, payment: { ...s.payment, ...patch } } : s));
+  }
+  function updateConnectivity(spId, patch) {
+    setSponsorships(prev => prev.map(s => {
+      if (s.id !== spId) return s;
+      const base = s.connectivity || { type: "", technicalTeam: "", setupDate: null, setupStatus: "Not Started", deviceReturnDate: null, deviceReturnStatus: null };
+      return { ...s, connectivity: { ...base, ...patch } };
+    }));
+  }
+  function removeConnectivity(spId) {
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, connectivity: null } : s));
+  }
+  function addDeliverable(spId, dl) {
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, deliverables: [...s.deliverables, { id: "dl-" + Date.now(), status: "Pending", evidence: "", notes: "", ...dl }] } : s));
+  }
+  function removeDeliverable(spId, dlId) {
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, deliverables: s.deliverables.filter(d => d.id !== dlId) } : s));
+  }
+  function editDeliverable(spId, dlId, patch) {
+    setSponsorships(prev => prev.map(s => s.id !== spId ? s : { ...s, deliverables: s.deliverables.map(d => d.id === dlId ? { ...d, ...patch } : d) } ));
+  }
+  function setStageDirect(spId, stage) {
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, stage, stageEnteredDate: TODAY } : s));
+  }
+  function deleteSponsorship(spId) {
+    setSponsorships(prev => prev.filter(s => s.id !== spId));
+    closeDetail();
+  }
 
   function cycleDeliverable(spId, dlId) {
     setSponsorships(prev => prev.map(s => {
@@ -668,6 +744,7 @@ export default function SponsorshipTracker() {
               </div>
             )}
           </div>
+          <button className="btn primary" onClick={() => setNewRequestOpen(true)}>+ New Request</button>
           <button className="close-btn" title="Follow-up rules" onClick={() => setSettingsOpen(true)}><SettingsIcon size={14} /></button>
         </div>
 
@@ -694,7 +771,19 @@ export default function SponsorshipTracker() {
         <div className="overlay" onClick={closeDetail}>
           <div className="detail-panel" onClick={e => e.stopPropagation()}>
             <DetailPanel sp={selected} tab={detailTab} setTab={setDetailTab} close={closeDetail}
-              cycleDeliverable={cycleDeliverable} toggleTask={toggleTask} advanceStage={advanceStage} />
+              cycleDeliverable={cycleDeliverable} toggleTask={toggleTask} advanceStage={advanceStage}
+              editMode={editMode} setEditMode={setEditMode} updateFields={updateFields} updatePayment={updatePayment}
+              updateConnectivity={updateConnectivity} removeConnectivity={removeConnectivity} addDeliverable={addDeliverable}
+              removeDeliverable={removeDeliverable} editDeliverable={editDeliverable} setStageDirect={setStageDirect}
+              deleteSponsorship={deleteSponsorship} />
+          </div>
+        </div>
+      )}
+
+      {newRequestOpen && (
+        <div className="overlay" onClick={() => setNewRequestOpen(false)}>
+          <div className="detail-panel" style={{ width: 480 }} onClick={e => e.stopPropagation()}>
+            <NewRequestForm onCreate={createSponsorship} close={() => setNewRequestOpen(false)} />
           </div>
         </div>
       )}
@@ -934,6 +1023,58 @@ function DashboardView(props) {
   );
 }
 
+function NewRequestForm({ onCreate, close }) {
+  const [form, setForm] = useState({
+    eventName: "", organizer: "", eventType: "", region: "", sponsorAmount: "",
+    sponsorshipType: "", eventDate: "", background: "",
+  });
+  const set = (k) => (e) => setForm(prev => ({ ...prev, [k]: e.target.value }));
+  const canSubmit = form.eventName.trim() && form.organizer.trim();
+
+  return (
+    <>
+      <div className="detail-head">
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
+          <button className="btn ghost" onClick={close}><ArrowLeft size={13} /> Cancel</button>
+          <button className="close-btn" onClick={close}><X size={14} /></button>
+        </div>
+        <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>New Sponsorship Request</div>
+        <div className="row-sub" style={{ marginTop: 3 }}>Logs the request at "New Request" stage. You can fill in the rest — memo, budget code, deliverables — once it's created.</div>
+      </div>
+      <div className="detail-body">
+        <div className="form-row">
+          <div className="kv-label">Event Name *</div>
+          <input className="form-input" value={form.eventName} onChange={set("eventName")} placeholder="e.g. Inter-School Chess Championship" />
+        </div>
+        <div className="form-row">
+          <div className="kv-label">Organizer *</div>
+          <input className="form-input" value={form.organizer} onChange={set("organizer")} placeholder="e.g. Maldives Chess Association" />
+        </div>
+        <div className="form-row-2">
+          <div><div className="kv-label">Event Type</div><input className="form-input" value={form.eventType} onChange={set("eventType")} placeholder="Sports / CSR / Regional…" /></div>
+          <div><div className="kv-label">Region</div><input className="form-input" value={form.region} onChange={set("region")} placeholder="Malé, Addu City…" /></div>
+        </div>
+        <div className="form-row-2">
+          <div><div className="kv-label">Sponsor Amount (MVR)</div><input type="number" className="form-input" value={form.sponsorAmount} onChange={set("sponsorAmount")} placeholder="0" /></div>
+          <div><div className="kv-label">Sponsorship Type</div><input className="form-input" value={form.sponsorshipType} onChange={set("sponsorshipType")} placeholder="Cash / Connectivity…" /></div>
+        </div>
+        <div className="form-row">
+          <div className="kv-label">Event Date</div>
+          <input type="date" className="form-input" value={form.eventDate} onChange={set("eventDate")} />
+        </div>
+        <div className="form-row">
+          <div className="kv-label">Background</div>
+          <textarea className="form-textarea" value={form.background} onChange={set("background")} placeholder="What is this event, briefly?" />
+        </div>
+        <button className="btn primary" disabled={!canSubmit} style={!canSubmit ? { opacity: 0.5, cursor: "not-allowed" } : undefined} onClick={() => canSubmit && onCreate(form)}>
+          Create Request
+        </button>
+      </div>
+    </>
+  );
+}
+
+
 const THRESHOLD_FIELDS = [
   { key: "approvalWarnDays", label: "Flag an approval as stalled after (days)", group: "Approvals" },
   { key: "approvalUrgentDays", label: "Escalate to Urgent after (days)", group: "Approvals" },
@@ -1150,47 +1291,81 @@ function CalendarView({ sponsorships, openDetail }) {
 }
 
 /* ============================== DETAIL PANEL ============================== */
-function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, toggleTask, advanceStage }) {
+function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, toggleTask, advanceStage,
+  editMode, setEditMode, updateFields, updatePayment, updateConnectivity, removeConnectivity,
+  addDeliverable, removeDeliverable, editDeliverable, setStageDirect, deleteSponsorship }) {
   const followUps = generateFollowUps(sp);
   const tasks = STAGE_TASKS[sp.stage] || [];
   const stageIdx = STAGES.indexOf(sp.stage);
+  const [newDl, setNewDl] = useState({ name: "", owner: "", dueDate: "" });
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const dstr = (dt) => dt ? dt.toISOString().slice(0, 10) : "";
 
   return (
     <>
       <div className="detail-head">
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
           <button className="btn ghost" onClick={close}><ArrowLeft size={13} /> Close</button>
-          <button className="close-btn" onClick={close}><X size={14} /></button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button className={`btn ${editMode ? "primary" : ""}`} onClick={() => setEditMode(!editMode)}>{editMode ? "Done Editing" : "Edit"}</button>
+            <button className="close-btn" onClick={close}><X size={14} /></button>
+          </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
           <div className="mono" style={{ fontSize: 11, color: "var(--text-faint)" }}>{sp.requestId} {sp.memoNumber && `· ${sp.memoNumber}`}</div>
           <span className={`badge ${computeHealth(sp).cls}`}>{computeHealth(sp).label}</span>
         </div>
-        <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{sp.eventName}</div>
-        <div className="row-sub" style={{ marginTop: 3 }}><Building2 size={11} style={{ verticalAlign: -2, marginRight: 4 }} />{sp.organizer}</div>
 
-        {STAGES.includes(sp.stage) && (
-          <div className="stage-track">
-            {STAGES.map((st, i) => (
-              <div key={st} style={{ display: "flex", alignItems: "center", gap: 3 }}>
-                <div className={`stage-node ${i < stageIdx ? "done" : i === stageIdx ? "current" : ""}`}>{st}</div>
-                {i < STAGES.length - 1 && <span className="stage-arrow">→</span>}
-              </div>
-            ))}
-          </div>
+        {editMode ? (
+          <input className="form-input disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}
+            value={sp.eventName} onChange={e => updateFields(sp.id, { eventName: e.target.value })} />
+        ) : (
+          <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{sp.eventName}</div>
         )}
-        {!STAGES.includes(sp.stage) && <div style={{ marginTop: 10 }}><span className={`badge ${stageBadgeClass(sp.stage)}`}>{sp.stage}</span></div>}
+        {editMode ? (
+          <input className="form-input" style={{ marginTop: 4 }} value={sp.organizer} onChange={e => updateFields(sp.id, { organizer: e.target.value })} />
+        ) : (
+          <div className="row-sub" style={{ marginTop: 3 }}><Building2 size={11} style={{ verticalAlign: -2, marginRight: 4 }} />{sp.organizer}</div>
+        )}
 
-        {STAGES.includes(sp.stage) && (
-          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <button className="btn" onClick={() => advanceStage(sp.id, -1)} disabled={stageIdx === 0}>← Move back</button>
-            <button className="btn" onClick={() => advanceStage(sp.id, 1)} disabled={stageIdx === STAGES.length - 1}>Advance stage →</button>
+        {editMode ? (
+          <div className="form-row" style={{ marginTop: 12 }}>
+            <div className="kv-label">Stage</div>
+            <select className="form-select" value={sp.stage} onChange={e => setStageDirect(sp.id, e.target.value)}>
+              {STAGES.concat(TERMINAL_ONLY).map(st => <option key={st} value={st}>{st}</option>)}
+            </select>
           </div>
+        ) : (
+          <>
+            {STAGES.includes(sp.stage) && (
+              <div className="stage-track">
+                {STAGES.map((st, i) => (
+                  <div key={st} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                    <div className={`stage-node ${i < stageIdx ? "done" : i === stageIdx ? "current" : ""}`}>{st}</div>
+                    {i < STAGES.length - 1 && <span className="stage-arrow">→</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {!STAGES.includes(sp.stage) && <div style={{ marginTop: 10 }}><span className={`badge ${stageBadgeClass(sp.stage)}`}>{sp.stage}</span></div>}
+            {STAGES.includes(sp.stage) && (
+              <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                <button className="btn" onClick={() => advanceStage(sp.id, -1)} disabled={stageIdx === 0}>← Move back</button>
+                <button className="btn" onClick={() => advanceStage(sp.id, 1)} disabled={stageIdx === STAGES.length - 1}>Advance stage →</button>
+                <button className="btn danger" onClick={() => setStageDirect(sp.id, "Rejected")}>Reject</button>
+              </div>
+            )}
+            {sp.stage === "Completed" && (
+              <div style={{ marginTop: 8 }}>
+                <button className="btn" onClick={() => setStageDirect(sp.id, "Archived")}>Archive</button>
+              </div>
+            )}
+          </>
         )}
 
         <div className="tabs">
           {["overview", "deliverables", "payment", "connectivity", "tasks"].map(t => (
-            (t !== "connectivity" || sp.connectivity) && (
+            (t !== "connectivity" || sp.connectivity || editMode) && (
               <div key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
                 {t.charAt(0).toUpperCase() + t.slice(1)}
               </div>
@@ -1223,21 +1398,57 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, toggleTask, adv
               </div>
             )}
 
-            <div className="kv-grid">
-              <div><div className="kv-label">Region</div><div className="kv-val"><MapPin size={11} style={{ verticalAlign: -1, marginRight: 3 }} />{sp.region}</div></div>
-              <div><div className="kv-label">Event Type</div><div className="kv-val">{sp.eventType}</div></div>
-              <div><div className="kv-label">Sponsor Amount</div><div className="kv-val mono">{fmtMVR(sp.sponsorAmount)}</div></div>
-              <div><div className="kv-label">Sponsorship Type</div><div className="kv-val">{sp.sponsorshipType}</div></div>
-              <div><div className="kv-label">Request Received</div><div className="kv-val">{fmtDate(sp.receivedDate)}</div></div>
-              <div><div className="kv-label">Event Date</div><div className="kv-val">{fmtDate(sp.eventDate)}</div></div>
-              <div><div className="kv-label">Budget Code</div><div className="kv-val mono">{sp.budgetCode || "—"}</div></div>
-              <div><div className="kv-label">Duration</div><div className="kv-val">{sp.duration || "—"}</div></div>
-            </div>
+            {editMode ? (
+              <>
+                <div className="form-row-2">
+                  <div><div className="kv-label">Region</div><input className="form-input" value={sp.region} onChange={e => updateFields(sp.id, { region: e.target.value })} /></div>
+                  <div><div className="kv-label">Event Type</div><input className="form-input" value={sp.eventType} onChange={e => updateFields(sp.id, { eventType: e.target.value })} /></div>
+                </div>
+                <div className="form-row-2">
+                  <div><div className="kv-label">Sponsor Amount (MVR)</div><input type="number" className="form-input" value={sp.sponsorAmount} onChange={e => updateFields(sp.id, { sponsorAmount: Number(e.target.value) || 0 })} /></div>
+                  <div><div className="kv-label">Sponsorship Type</div><input className="form-input" value={sp.sponsorshipType} onChange={e => updateFields(sp.id, { sponsorshipType: e.target.value })} /></div>
+                </div>
+                <div className="form-row-2">
+                  <div><div className="kv-label">Event Date</div><input type="date" className="form-input" value={dstr(sp.eventDate)} onChange={e => updateFields(sp.id, { eventDate: e.target.value ? new Date(e.target.value + "T00:00:00") : sp.eventDate })} /></div>
+                  <div><div className="kv-label">Budget Code</div><input className="form-input" value={sp.budgetCode} onChange={e => updateFields(sp.id, { budgetCode: e.target.value })} /></div>
+                </div>
+                <div className="form-row-2">
+                  <div><div className="kv-label">Memo Number</div><input className="form-input" value={sp.memoNumber} onChange={e => updateFields(sp.id, { memoNumber: e.target.value })} /></div>
+                  <div><div className="kv-label">Duration</div><input className="form-input" value={sp.duration} onChange={e => updateFields(sp.id, { duration: e.target.value })} /></div>
+                </div>
+                <div className="form-row"><div className="kv-label">Background</div><textarea className="form-textarea" value={sp.background} onChange={e => updateFields(sp.id, { background: e.target.value })} /></div>
+                <div className="form-row"><div className="kv-label">Benefits</div><textarea className="form-textarea" value={sp.benefits} onChange={e => updateFields(sp.id, { benefits: e.target.value })} /></div>
+                <div className="form-row"><div className="kv-label">Justification</div><textarea className="form-textarea" value={sp.justification} onChange={e => updateFields(sp.id, { justification: e.target.value })} /></div>
+                <div className="form-row"><div className="kv-label">Notes</div><textarea className="form-textarea" value={sp.notes} onChange={e => updateFields(sp.id, { notes: e.target.value })} /></div>
 
-            {sp.background && (<><div className="section-label">Background</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.background}</div></>)}
-            {sp.benefits && (<><div className="section-label">Benefits</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.benefits}</div></>)}
-            {sp.justification && (<><div className="section-label">Justification</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.justification}</div></>)}
-            {sp.notes && (<><div className="section-label">Notes</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.notes}</div></>)}
+                {!confirmDelete ? (
+                  <button className="btn danger" onClick={() => setConfirmDelete(true)}>Delete this request</button>
+                ) : (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: "var(--text-dim)" }}>Delete permanently?</span>
+                    <button className="btn danger" onClick={() => deleteSponsorship(sp.id)}>Yes, delete</button>
+                    <button className="btn ghost" onClick={() => setConfirmDelete(false)}>Cancel</button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="kv-grid">
+                  <div><div className="kv-label">Region</div><div className="kv-val"><MapPin size={11} style={{ verticalAlign: -1, marginRight: 3 }} />{sp.region || "—"}</div></div>
+                  <div><div className="kv-label">Event Type</div><div className="kv-val">{sp.eventType || "—"}</div></div>
+                  <div><div className="kv-label">Sponsor Amount</div><div className="kv-val mono">{fmtMVR(sp.sponsorAmount)}</div></div>
+                  <div><div className="kv-label">Sponsorship Type</div><div className="kv-val">{sp.sponsorshipType || "—"}</div></div>
+                  <div><div className="kv-label">Request Received</div><div className="kv-val">{fmtDate(sp.receivedDate)}</div></div>
+                  <div><div className="kv-label">Event Date</div><div className="kv-val">{fmtDate(sp.eventDate)}</div></div>
+                  <div><div className="kv-label">Budget Code</div><div className="kv-val mono">{sp.budgetCode || "—"}</div></div>
+                  <div><div className="kv-label">Duration</div><div className="kv-val">{sp.duration || "—"}</div></div>
+                </div>
+                {sp.background && (<><div className="section-label">Background</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.background}</div></>)}
+                {sp.benefits && (<><div className="section-label">Benefits</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.benefits}</div></>)}
+                {sp.justification && (<><div className="section-label">Justification</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.justification}</div></>)}
+                {sp.notes && (<><div className="section-label">Notes</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.notes}</div></>)}
+              </>
+            )}
           </>
         )}
 
@@ -1254,46 +1465,132 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, toggleTask, adv
                     {dl.status === "In Progress" && <Circle size={7} color="var(--signal-warn)" fill="var(--signal-warn)" />}
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div className={`check-label ${dl.status === "Done" ? "done" : ""}`}>{dl.name}</div>
-                    <div className="check-meta">Owner: {dl.owner} · Due {fmtDate(dl.dueDate)} {dl.evidence && `· Evidence: ${dl.evidence}`}{dl.notes && ` · ${dl.notes}`}</div>
+                    {editMode ? (
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+                        <input className="form-input" style={{ width: 160 }} value={dl.name} onChange={e => editDeliverable(sp.id, dl.id, { name: e.target.value })} />
+                        <input className="form-input" style={{ width: 100 }} value={dl.owner} onChange={e => editDeliverable(sp.id, dl.id, { owner: e.target.value })} placeholder="Owner" />
+                        <input type="date" className="form-input" style={{ width: 130 }} value={dstr(dl.dueDate)} onChange={e => editDeliverable(sp.id, dl.id, { dueDate: e.target.value ? new Date(e.target.value + "T00:00:00") : dl.dueDate })} />
+                      </div>
+                    ) : (
+                      <>
+                        <div className={`check-label ${dl.status === "Done" ? "done" : ""}`}>{dl.name}</div>
+                        <div className="check-meta">Owner: {dl.owner} · Due {fmtDate(dl.dueDate)} {dl.evidence && `· Evidence: ${dl.evidence}`}{dl.notes && ` · ${dl.notes}`}</div>
+                      </>
+                    )}
                   </div>
-                  <span className={`badge ${overdue ? "crit" : dl.status === "Done" ? "ok" : dl.status === "In Progress" ? "warn" : "neutral"}`}>{overdue ? "Overdue" : dl.status}</span>
+                  {editMode ? (
+                    <X size={14} className="del-x" onClick={() => removeDeliverable(sp.id, dl.id)} />
+                  ) : (
+                    <span className={`badge ${overdue ? "crit" : dl.status === "Done" ? "ok" : dl.status === "In Progress" ? "warn" : "neutral"}`}>{overdue ? "Overdue" : dl.status}</span>
+                  )}
                 </div>
               );
             })}
+            {editMode && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
+                <input className="form-input" style={{ width: 160 }} placeholder="New deliverable name" value={newDl.name} onChange={e => setNewDl({ ...newDl, name: e.target.value })} />
+                <input className="form-input" style={{ width: 100 }} placeholder="Owner" value={newDl.owner} onChange={e => setNewDl({ ...newDl, owner: e.target.value })} />
+                <input type="date" className="form-input" style={{ width: 130 }} value={newDl.dueDate} onChange={e => setNewDl({ ...newDl, dueDate: e.target.value })} />
+                <button className="btn" disabled={!newDl.name.trim()} onClick={() => {
+                  if (!newDl.name.trim()) return;
+                  addDeliverable(sp.id, { name: newDl.name, owner: newDl.owner || "Unassigned", dueDate: newDl.dueDate ? new Date(newDl.dueDate + "T00:00:00") : TODAY });
+                  setNewDl({ name: "", owner: "", dueDate: "" });
+                }}>+ Add</button>
+              </div>
+            )}
           </>
         )}
 
         {tab === "payment" && sp.payment && (
           <>
             <div className="section-label">Payment Tracker</div>
-            <div className="kv-grid">
-              <div><div className="kv-label">Sponsor Amount</div><div className="kv-val mono">{fmtMVR(sp.sponsorAmount)}</div></div>
-              <div><div className="kv-label">Invoice Status</div><div className="kv-val">{sp.payment.invoiceStatus}</div></div>
-              <div><div className="kv-label">PR Status</div><div className="kv-val">{sp.payment.prStatus}</div></div>
-              <div><div className="kv-label">PO Status</div><div className="kv-val">{sp.payment.poStatus}</div></div>
-              <div><div className="kv-label">Payment Status</div><div className="kv-val"><span className={`badge ${sp.payment.paymentStatus === "Paid" ? "ok" : sp.payment.paymentStatus === "Pending" ? "warn" : "neutral"}`}>{sp.payment.paymentStatus}</span></div></div>
-              <div><div className="kv-label">Payment Due</div><div className="kv-val">{fmtDate(sp.payment.paymentDueDate)}</div></div>
-              <div><div className="kv-label">Finance Follow-up</div><div className="kv-val">{fmtDate(sp.payment.financeFollowUpDate)}</div></div>
-            </div>
+            {editMode ? (
+              <>
+                <div className="form-row-2">
+                  <div><div className="kv-label">Invoice Status</div>
+                    <select className="form-select" value={sp.payment.invoiceStatus} onChange={e => updatePayment(sp.id, { invoiceStatus: e.target.value })}>
+                      {["N/A", "Not Required", "Pending", "Received"].map(o => <option key={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div><div className="kv-label">Payment Status</div>
+                    <select className="form-select" value={sp.payment.paymentStatus} onChange={e => updatePayment(sp.id, { paymentStatus: e.target.value })}>
+                      {["N/A", "Pending", "Paid"].map(o => <option key={o}>{o}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="form-row-2">
+                  <div><div className="kv-label">PR Status</div>
+                    <select className="form-select" value={sp.payment.prStatus} onChange={e => updatePayment(sp.id, { prStatus: e.target.value })}>
+                      {["Not Started", "Raised", "Approved"].map(o => <option key={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div><div className="kv-label">PO Status</div>
+                    <select className="form-select" value={sp.payment.poStatus} onChange={e => updatePayment(sp.id, { poStatus: e.target.value })}>
+                      {["Not Started", "Raised", "Approved"].map(o => <option key={o}>{o}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="form-row-2">
+                  <div><div className="kv-label">Payment Due</div><input type="date" className="form-input" value={dstr(sp.payment.paymentDueDate)} onChange={e => updatePayment(sp.id, { paymentDueDate: e.target.value ? new Date(e.target.value + "T00:00:00") : null })} /></div>
+                  <div><div className="kv-label">Finance Follow-up</div><input type="date" className="form-input" value={dstr(sp.payment.financeFollowUpDate)} onChange={e => updatePayment(sp.id, { financeFollowUpDate: e.target.value ? new Date(e.target.value + "T00:00:00") : null })} /></div>
+                </div>
+              </>
+            ) : (
+              <div className="kv-grid">
+                <div><div className="kv-label">Sponsor Amount</div><div className="kv-val mono">{fmtMVR(sp.sponsorAmount)}</div></div>
+                <div><div className="kv-label">Invoice Status</div><div className="kv-val">{sp.payment.invoiceStatus}</div></div>
+                <div><div className="kv-label">PR Status</div><div className="kv-val">{sp.payment.prStatus}</div></div>
+                <div><div className="kv-label">PO Status</div><div className="kv-val">{sp.payment.poStatus}</div></div>
+                <div><div className="kv-label">Payment Status</div><div className="kv-val"><span className={`badge ${sp.payment.paymentStatus === "Paid" ? "ok" : sp.payment.paymentStatus === "Pending" ? "warn" : "neutral"}`}>{sp.payment.paymentStatus}</span></div></div>
+                <div><div className="kv-label">Payment Due</div><div className="kv-val">{fmtDate(sp.payment.paymentDueDate)}</div></div>
+                <div><div className="kv-label">Finance Follow-up</div><div className="kv-val">{fmtDate(sp.payment.financeFollowUpDate)}</div></div>
+              </div>
+            )}
           </>
         )}
 
-        {tab === "connectivity" && sp.connectivity && (
+        {tab === "connectivity" && (sp.connectivity || editMode) && (
           <>
             <div className="section-label">Connectivity &amp; Device Module</div>
-            <div className="kv-grid">
-              <div><div className="kv-label">Type</div><div className="kv-val">{sp.connectivity.type}</div></div>
-              <div><div className="kv-label">Technical Team</div><div className="kv-val">{sp.connectivity.technicalTeam}</div></div>
-              <div><div className="kv-label">Setup Date</div><div className="kv-val">{fmtDate(sp.connectivity.setupDate)}</div></div>
-              <div><div className="kv-label">Setup Status</div><div className="kv-val"><span className={`badge ${sp.connectivity.setupStatus === "Completed" ? "ok" : "warn"}`}>{sp.connectivity.setupStatus}</span></div></div>
-              {sp.connectivity.deviceReturnDate && (
-                <>
-                  <div><div className="kv-label">Device Return Date</div><div className="kv-val">{fmtDate(sp.connectivity.deviceReturnDate)}</div></div>
-                  <div><div className="kv-label">Return Status</div><div className="kv-val"><span className={`badge ${sp.connectivity.deviceReturnStatus === "Pending Return" ? "crit" : "ok"}`}>{sp.connectivity.deviceReturnStatus}</span></div></div>
-                </>
-              )}
-            </div>
+            {editMode ? (
+              <>
+                <div className="form-row"><div className="kv-label">Type</div><input className="form-input" value={sp.connectivity?.type || ""} onChange={e => updateConnectivity(sp.id, { type: e.target.value })} placeholder="5G AirFibre / ILL / Temporary Devices…" /></div>
+                <div className="form-row-2">
+                  <div><div className="kv-label">Technical Team</div><input className="form-input" value={sp.connectivity?.technicalTeam || ""} onChange={e => updateConnectivity(sp.id, { technicalTeam: e.target.value })} /></div>
+                  <div><div className="kv-label">Setup Status</div>
+                    <select className="form-select" value={sp.connectivity?.setupStatus || "Not Started"} onChange={e => updateConnectivity(sp.id, { setupStatus: e.target.value })}>
+                      {["Not Started", "Pending Setup", "Completed"].map(o => <option key={o}>{o}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="form-row-2">
+                  <div><div className="kv-label">Setup Date</div><input type="date" className="form-input" value={dstr(sp.connectivity?.setupDate)} onChange={e => updateConnectivity(sp.id, { setupDate: e.target.value ? new Date(e.target.value + "T00:00:00") : null })} /></div>
+                  <div><div className="kv-label">Device Return Date</div><input type="date" className="form-input" value={dstr(sp.connectivity?.deviceReturnDate)} onChange={e => updateConnectivity(sp.id, { deviceReturnDate: e.target.value ? new Date(e.target.value + "T00:00:00") : null })} /></div>
+                </div>
+                <div className="form-row">
+                  <div className="kv-label">Return Status</div>
+                  <select className="form-select" value={sp.connectivity?.deviceReturnStatus || ""} onChange={e => updateConnectivity(sp.id, { deviceReturnStatus: e.target.value || null })}>
+                    <option value="">N/A — no device to return</option>
+                    <option value="Pending Return">Pending Return</option>
+                    <option value="Returned">Returned</option>
+                  </select>
+                </div>
+                {sp.connectivity && <button className="btn danger" onClick={() => removeConnectivity(sp.id)}>Remove connectivity module</button>}
+              </>
+            ) : (
+              <div className="kv-grid">
+                <div><div className="kv-label">Type</div><div className="kv-val">{sp.connectivity.type}</div></div>
+                <div><div className="kv-label">Technical Team</div><div className="kv-val">{sp.connectivity.technicalTeam}</div></div>
+                <div><div className="kv-label">Setup Date</div><div className="kv-val">{fmtDate(sp.connectivity.setupDate)}</div></div>
+                <div><div className="kv-label">Setup Status</div><div className="kv-val"><span className={`badge ${sp.connectivity.setupStatus === "Completed" ? "ok" : "warn"}`}>{sp.connectivity.setupStatus}</span></div></div>
+                {sp.connectivity.deviceReturnDate && (
+                  <>
+                    <div><div className="kv-label">Device Return Date</div><div className="kv-val">{fmtDate(sp.connectivity.deviceReturnDate)}</div></div>
+                    <div><div className="kv-label">Return Status</div><div className="kv-val"><span className={`badge ${sp.connectivity.deviceReturnStatus === "Pending Return" ? "crit" : "ok"}`}>{sp.connectivity.deviceReturnStatus}</span></div></div>
+                  </>
+                )}
+              </div>
+            )}
           </>
         )}
 
