@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect } from "react";
+import * as XLSX from "xlsx";
 import {
   LayoutDashboard, ListChecks, Users, Calendar as CalendarIcon, Search, Bell,
-  Wifi, CreditCard, Clock, AlertTriangle, CheckCircle2, ChevronRight, X,
-  ArrowLeft, Building2, FileText, TrendingUp, Circle, MapPin, Settings as SettingsIcon
+  Wifi, CreditCard, Clock, AlertTriangle, CheckCircle2, ChevronRight, ChevronDown, ChevronLeft, X,
+  ArrowLeft, Building2, FileText, TrendingUp, Circle, MapPin, Settings as SettingsIcon, Download
 } from "lucide-react";
 
 /* ============================== DESIGN TOKENS ============================== */
@@ -251,7 +252,7 @@ const SUGGESTED_TASKS = {
   "Memo Approval": ["Follow up with the currently pending approver", "Confirm all approver sign-offs are logged"],
   "Approved": ["Notify organizer of approval", "Arrange sponsorship agreement signing", "Schedule partner photo"],
   "Execution": ["Send official confirmation & offer to organizer", "Raise PR request", "Raise PO request", "Follow up with Finance on payment", "Send connectivity/device request if required"],
-  "Completed": ["Collect event photos", "Confirm deliverables evidence received", "Update monthly report", "Archive coverage"],
+  "Completed": ["Collect event photos", "Confirm deliverables evidence received", "Archive coverage"],
 };
 
 /* ============================== SEED DATA ============================== */
@@ -300,7 +301,7 @@ const SEED_SPONSORSHIPS = [
     connectivity: [
       { id: "c1", type: "5G AirFibre", technicalTeam: "Network Ops", setupDate: d("2026-08-13"), setupStatus: "Not Started", needsReturn: true, deviceReturnDate: null, deviceReturnStatus: null },
     ],
-    monthlyReportDone: false, notes: "", tasks: [],
+    notes: "", tasks: [],
   },
   {
     id: "sp-22", requestId: "SP-2026-022", eventName: "21st Anniversary — Senior Citizen Activity Day", organizer: "Ooredoo CSR Programme (Internal)",
@@ -321,7 +322,7 @@ const SEED_SPONSORSHIPS = [
       { id: "dl1", name: "Venue Booking", owner: "CSR Team", dueDate: d("2026-07-25"), status: "In Progress", evidence: "", notes: "" },
       { id: "dl2", name: "Activity Plan", owner: "Mua", dueDate: d("2026-07-24"), status: "Pending", evidence: "", notes: "" },
     ],
-    payment: seedPayment(), connectivity: [], monthlyReportDone: false, notes: "", tasks: [],
+    payment: seedPayment(), connectivity: [], notes: "", tasks: [],
   },
   {
     id: "sp-10", requestId: "SP-2026-010", eventName: "Eid Al-Adha Regional Event — Kulhudhuffushi", organizer: "Ministry of Youth, Sports & Community Empowerment",
@@ -342,7 +343,7 @@ const SEED_SPONSORSHIPS = [
       { id: "dl2", name: "Media Coverage", owner: "Organizer", dueDate: d("2026-07-29"), status: "Pending", evidence: "", notes: "" },
     ],
     payment: seedPayment({ invoiceStatus: "Pending", payment: { status: "Pending", dueDate: d("2026-07-26"), owner: "Finance" }, financeFollowUpDate: d("2026-07-20") }),
-    connectivity: [], monthlyReportDone: false, notes: "", tasks: [],
+    connectivity: [], notes: "", tasks: [],
   },
   {
     id: "sp-25", requestId: "SP-2026-025", eventName: "Inter-Atoll Swimming Championship", organizer: "Ministry of Youth, Sports & Community Empowerment",
@@ -358,7 +359,7 @@ const SEED_SPONSORSHIPS = [
       { id: "c1", type: "ILL Connection", technicalTeam: "Network Ops", setupDate: d("2026-08-30"), setupStatus: "Not Started", needsReturn: false, deviceReturnDate: null, deviceReturnStatus: null },
       { id: "c2", type: "MiFi Device", technicalTeam: "Network Ops", setupDate: d("2026-07-19"), setupStatus: "Completed", needsReturn: true, deviceReturnDate: d("2026-07-19"), deviceReturnStatus: "Pending Return" },
     ],
-    monthlyReportDone: false, notes: "Temporary device from prior test run is overdue for return.", tasks: [],
+    notes: "Temporary device from prior test run is overdue for return.", tasks: [],
   },
   {
     id: "sp-18", requestId: "SP-2026-018", eventName: "Male' City Marathon 2026", organizer: "Male' City Marathon Organizing Committee",
@@ -367,7 +368,7 @@ const SEED_SPONSORSHIPS = [
     memoNumber: "", budgetCode: "",
     background: "Annual flagship marathon, nationwide visibility.", benefits: "Title branding, booth, live connectivity, VIP.", justification: "Highest-reach annual sports sponsorship.", duration: "1 day",
     approvals: initApprovals(),
-    deliverables: [], payment: seedPayment(), connectivity: [], monthlyReportDone: false, notes: "", tasks: [],
+    deliverables: [], payment: seedPayment(), connectivity: [], notes: "", tasks: [],
   },
 ];
 
@@ -375,7 +376,7 @@ const SEED_SPONSORSHIPS = [
 const DEFAULT_THRESHOLDS = {
   approvalWarnDays: 3, approvalUrgentDays: 4, approvalCriticalDays: 6,
   connectivityWindowDays: 7, connectivityCriticalDays: 2,
-  eventApprovalWindowDays: 5, monthlyReportStaleDays: 20, intakeStallDays: 3,
+  eventApprovalWindowDays: 5, intakeStallDays: 3,
 };
 let THRESHOLDS = { ...DEFAULT_THRESHOLDS };
 
@@ -412,11 +413,11 @@ function generateFollowUps(sp) {
 
   if (sp.payment && ["Execution", "Completed"].includes(sp.stage)) {
     const { pr, po, payment } = sp.payment;
-    if (pr.status !== "Approved") {
+    if (!["Approved", "N/A", "Not Required"].includes(pr.status)) {
       const overdue = pr.dueDate ? daysBetween(TODAY, pr.dueDate) : -1;
       items.push({ text: `PR issuance still ${pr.status.toLowerCase()}${overdue > 0 ? ` (${overdue} days past due)` : ""}.`, level: overdue > 0 ? 4 : 2, category: "PR", owner: pr.owner || "You", sortDate: pr.dueDate || TODAY });
     }
-    if (po.status !== "Approved") {
+    if (!["Approved", "N/A", "Not Required"].includes(po.status)) {
       const overdue = po.dueDate ? daysBetween(TODAY, po.dueDate) : -1;
       items.push({ text: `PO issuance still ${po.status.toLowerCase()}${overdue > 0 ? ` (${overdue} days past due)` : ""}.`, level: overdue > 0 ? 4 : 2, category: "PO", owner: po.owner || "You", sortDate: po.dueDate || TODAY });
     }
@@ -448,9 +449,6 @@ function generateFollowUps(sp) {
   }
   if (daysToEvent >= 0 && daysToEvent <= T.eventApprovalWindowDays && !["Approved", "Execution", "Completed", "Archived", "Rejected"].includes(sp.stage)) {
     items.push({ text: `Event starts in ${daysToEvent} day${daysToEvent === 1 ? "" : "s"} — sponsorship not yet approved.`, level: 4, category: "Deadline", owner: "You", sortDate: sp.eventDate });
-  }
-  if (sp.stage === "Completed" && !sp.monthlyReportDone) {
-    items.push({ text: `Monthly report not completed.`, level: daysBetween(TODAY, sp.stageEnteredDate) > T.monthlyReportStaleDays ? 3 : 2, category: "Reporting", owner: "You", sortDate: sp.stageEnteredDate });
   }
   if (sp.stage === "Information Required") {
     items.push({ text: `Organizer has not submitted required information (${daysInStage} day${daysInStage === 1 ? "" : "s"} since flagged).`, level: daysInStage >= T.intakeStallDays ? 3 : 1, category: "Intake", owner: "Organizer", sortDate: sp.stageEnteredDate });
@@ -544,7 +542,7 @@ export default function SponsorshipTracker() {
   function acknowledge(key) { setDismissed(prev => ({ ...prev, [key]: true })); }
   function unacknowledge(key) { setDismissed(prev => { const n = { ...prev }; delete n[key]; return n; }); }
 
-  function openDetail(id) { setSelectedId(id); setDetailTab("overview"); setEditMode(false); }
+  function openDetail(id, tab) { setSelectedId(id); setDetailTab(tab || "overview"); setEditMode(false); }
   function closeDetail() { setSelectedId(null); setEditMode(false); }
 
   function nextRequestId() {
@@ -562,7 +560,7 @@ export default function SponsorshipTracker() {
       eventDate: data.eventDate ? parseDateInput(data.eventDate) : TODAY,
       memoNumber: "", budgetCode: "", background: data.background || "", benefits: "", justification: "", duration: "",
       approvals: initApprovals(), deliverables: [], payment: seedPayment(), connectivity: [],
-      monthlyReportDone: false, notes: "", tasks: [],
+      notes: "", tasks: [],
     };
     setSponsorships(prev => [newSp, ...prev]);
     setNewRequestOpen(false);
@@ -648,6 +646,44 @@ export default function SponsorshipTracker() {
     closeDetail();
   }
 
+  function exportToExcel() {
+    const rows = sponsorships.map(s => {
+      const h = computeHealth(s);
+      const fu = generateFollowUps(s);
+      const doneCount = s.deliverables.filter(x => x.status === "Done").length;
+      return {
+        "Request ID": s.requestId,
+        "Event Name": s.eventName,
+        "Organizer": s.organizer,
+        "Stage": s.stage,
+        "Health": h.label,
+        "Event Type": s.eventType,
+        "Region": s.region,
+        "Value Type": s.valueType,
+        "Sponsor Amount (MVR)": s.valueType === "In-Kind" ? "" : s.sponsorAmount,
+        "In-Kind Details": s.inKindDetails || "",
+        "Event Date": fmtDate(s.eventDate),
+        "Request Received": fmtDate(s.receivedDate),
+        "Memo Number": s.memoNumber,
+        "Budget Code": s.budgetCode,
+        "Memo Approval — Awaiting": currentApprover(s) ? currentApprover(s).approver : (s.approvals.every(a => a.status === "Approved") ? "All approved" : ""),
+        "PR Status": s.payment.pr.status,
+        "PO Status": s.payment.po.status,
+        "Payment Status": s.payment.payment.status,
+        "Payment Due": fmtDate(s.payment.payment.dueDate),
+        "Connectivity Items": (s.connectivity || []).map(c => c.type).join(", "),
+        "Deliverables Progress": s.deliverables.length ? `${doneCount}/${s.deliverables.length}` : "",
+        "Open Follow-ups": fu.map(f => f.text).join(" | "),
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = Object.keys(rows[0] || {}).map(k => ({ wch: Math.min(40, Math.max(12, k.length + 4)) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sponsorships");
+    const dateStamp = `${TODAY.getFullYear()}-${String(TODAY.getMonth() + 1).padStart(2, "0")}-${String(TODAY.getDate()).padStart(2, "0")}`;
+    XLSX.writeFile(wb, `sponsorship-tracker-${dateStamp}.xlsx`);
+  }
+
   const selected = sponsorships.find(s => s.id === selectedId) || null;
 
   const pendingApprovals = sponsorships.filter(s => s.stage === "Memo Approval");
@@ -722,6 +758,7 @@ export default function SponsorshipTracker() {
               </div>
             )}
           </div>
+          <button className="btn" onClick={exportToExcel} title="Export all sponsorships to Excel"><Download size={13} /> Export</button>
           <button className="btn primary" onClick={() => setNewRequestOpen(true)}>+ New Request</button>
           <button className="close-btn" title="Follow-up rules" onClick={() => setSettingsOpen(true)}><SettingsIcon size={14} /></button>
         </div>
@@ -788,64 +825,81 @@ function Signal({ size = 14, color = "#fff" }) {
 
 /* ============================== DASHBOARD ============================== */
 function DashboardView(props) {
-  const { overdueCount, upcomingEvents, pendingPayments, connectivityPending, deviceReturns,
-    allFollowUps, ackedFollowUps, recentRequests, recentApprovals, sponsorsRequiringAction,
-    openDetail, sponsorships, acknowledge, unacknowledge, showAcked, setShowAcked, feedExpanded, setFeedExpanded } = props;
+  const { overdueCount, upcomingEvents, allFollowUps, ackedFollowUps,
+    openDetail, sponsorships, acknowledge, unacknowledge, showAcked, setShowAcked } = props;
+  const [expanded, setExpanded] = useState({});
 
-  const health = sponsorships.filter(s => !["Archived", "Rejected"].includes(s.stage)).map(s => ({ sp: s, h: computeHealth(s) }));
-  const critCount = health.filter(x => x.h.status === "critical").length;
-  const riskCount = health.filter(x => x.h.status === "at-risk" || x.h.status === "watch").length;
-  const healthyCount = health.filter(x => x.h.status === "healthy").length;
-  const visibleFeed = feedExpanded ? allFollowUps : allFollowUps.slice(0, 6);
   const pendingApprovals = sponsorships.filter(s => s.stage === "Memo Approval");
+  const pendingPaymentsCount = sponsorships.filter(s => s.payment && s.payment.payment.status === "Pending").length;
+
+  // Group open follow-ups by sponsorship so you see one line per PROJECT, not one per issue —
+  // this is what actually tells you "what do I follow up on" at a glance instead of a flat list.
+  const grouped = useMemo(() => {
+    const byId = {};
+    allFollowUps.forEach(f => {
+      if (!byId[f.sponsorshipId]) byId[f.sponsorshipId] = { sponsorshipId: f.sponsorshipId, requestId: f.requestId, eventName: f.eventName, items: [] };
+      byId[f.sponsorshipId].items.push(f);
+    });
+    const groups = Object.values(byId).map(g => {
+      const sp = sponsorships.find(s => s.id === g.sponsorshipId);
+      return { ...g, organizer: sp ? sp.organizer : "", topLevel: Math.max(...g.items.map(i => i.level)) };
+    });
+    return groups.sort((a, b) => b.topLevel - a.topLevel);
+  }, [allFollowUps, sponsorships]);
+
+  const flaggedCount = grouped.length;
+  const onTrackCount = sponsorships.filter(s => !["Archived", "Rejected"].includes(s.stage)).length - flaggedCount;
 
   return (
     <>
       <div className="grid stat-row">
-        <StatCard label="In Memo Approval" num={pendingApprovals.length} icon={<ListChecks size={14} />} color="warn" />
-        <StatCard label="Events (Next 21 Days)" num={upcomingEvents.length} icon={<CalendarIcon size={14} />} color="info" />
-        <StatCard label="Pending Payments" num={pendingPayments.length} icon={<CreditCard size={14} />} color="warn" />
         <StatCard label="Critical Items" num={overdueCount} icon={<AlertTriangle size={14} />} color="crit" hot={overdueCount > 0} />
+        <StatCard label="Memo Approval Pending" num={pendingApprovals.length} icon={<ListChecks size={14} />} color="warn" />
+        <StatCard label="Events (Next 21 Days)" num={upcomingEvents.length} icon={<CalendarIcon size={14} />} color="info" />
+        <StatCard label="Pending Payments" num={pendingPaymentsCount} icon={<CreditCard size={14} />} color="warn" />
       </div>
 
+      {/* Needs Attention — health + follow-ups combined, one line per project, expandable for detail */}
       <div className="panel" style={{ marginBottom: 16 }}>
-        <div className="panel-head"><div className="panel-title"><TrendingUp size={13} /> Project Health</div>
-          <div className="panel-title-count">{critCount} critical · {riskCount} at risk · {healthyCount} on track</div></div>
+        <div className="panel-head"><div className="panel-title"><Bell size={13} /> Needs Attention</div>
+          <div className="panel-title-count">{flaggedCount} flagged · {onTrackCount} on track{ackedFollowUps.length > 0 ? ` · ${ackedFollowUps.length} acknowledged` : ""}</div></div>
         <div className="panel-body">
-          {health.sort((a, b) => { const o = { critical: 0, "at-risk": 1, watch: 2, healthy: 3 }; return o[a.h.status] - o[b.h.status]; }).map(({ sp, h }) => {
-            const daysToEvent = daysBetween(sp.eventDate, TODAY);
+          {grouped.length === 0 && <div className="panel-empty">Nothing needs attention right now — {onTrackCount} sponsorships on track.</div>}
+          {grouped.map(g => {
+            const b = levelBadge(g.topLevel);
+            const isOpen = !!expanded[g.sponsorshipId];
+            const top = g.items[0];
             return (
-              <div className="row" key={sp.id} onClick={() => openDetail(sp.id)}>
-                <div className="dot" style={{ color: h.cls === "crit" ? "var(--signal-crit)" : h.cls === "warn" ? "var(--signal-warn)" : "var(--signal-ok)", width: 7, height: 7, flexShrink: 0 }} />
-                <div style={{ flex: 1 }}><div className="row-title">{sp.eventName}</div><div className="row-sub">{sp.stage} · {daysToEvent >= 0 ? `event in ${daysToEvent}d` : "event passed"}</div></div>
-                <span className={`badge ${h.cls}`}>{h.label}</span>
+              <div key={g.sponsorshipId} style={{ borderBottom: "1px solid var(--line-soft)" }}>
+                <div className="attn-item" style={{ cursor: "pointer" }} onClick={() => setExpanded(prev => ({ ...prev, [g.sponsorshipId]: !isOpen }))}>
+                  <SignalBars level={g.topLevel} />
+                  <div style={{ flex: 1 }}>
+                    <div className="row-title" style={{ marginBottom: 2 }}>{g.eventName} <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>· {g.organizer}</span></div>
+                    <div className="attn-text">{top.text}</div>
+                    <div className="attn-meta">owner: {top.owner}{g.items.length > 1 ? ` · +${g.items.length - 1} more issue${g.items.length - 1 === 1 ? "" : "s"}` : ""}</div>
+                  </div>
+                  <span className={`badge ${b.cls}`}>{b.label}</span>
+                  {isOpen ? <ChevronDown size={14} style={{ color: "var(--text-faint)" }} /> : <ChevronRight size={14} style={{ color: "var(--text-faint)" }} />}
+                </div>
+                {isOpen && (
+                  <div style={{ padding: "0 10px 10px 34px" }}>
+                    {g.items.map(f => (
+                      <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px solid var(--line-soft)" }}>
+                        <div style={{ flex: 1 }}>
+                          <div className="attn-text">{f.text}</div>
+                          <div className="attn-meta">{f.category} · owner: {f.owner}</div>
+                        </div>
+                        <button className="btn ghost" style={{ padding: "4px 8px", fontSize: 10.5 }} onClick={(e) => { e.stopPropagation(); acknowledge(f.key); }}>Ack</button>
+                      </div>
+                    ))}
+                    <button className="btn ghost" style={{ marginTop: 6, fontSize: 11 }} onClick={(e) => { e.stopPropagation(); openDetail(g.sponsorshipId); }}>Open full details →</button>
+                  </div>
+                )}
               </div>
             );
           })}
-        </div>
-      </div>
-
-      <div className="panel" style={{ marginBottom: 16 }}>
-        <div className="panel-head"><div className="panel-title"><Bell size={13} /> Attention Feed</div>
-          <div className="panel-title-count">{allFollowUps.length} open{ackedFollowUps.length > 0 ? ` · ${ackedFollowUps.length} acknowledged` : ""}</div></div>
-        <div className="panel-body">
-          {allFollowUps.length === 0 && <div className="panel-empty">Nothing needs attention right now.</div>}
-          {visibleFeed.map((f) => (
-            <div className="attn-item" key={f.key}>
-              <div onClick={() => openDetail(f.sponsorshipId)} style={{ display: "flex", gap: 10, flex: 1, cursor: "pointer" }}>
-                <SignalBars level={f.level} />
-                <div><div className="attn-text">{f.text}</div><div className="attn-meta">{f.requestId} · {f.eventName} · <span style={{ color: "var(--text-dim)" }}>owner: {f.owner}</span></div></div>
-              </div>
-              <button className="btn ghost" style={{ padding: "5px 9px", fontSize: 11, flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); acknowledge(f.key); }}><CheckCircle2 size={12} /> Ack</button>
-            </div>
-          ))}
-          {allFollowUps.length > 6 && (
-            <div style={{ textAlign: "center", padding: "8px 0 2px 0" }}>
-              <button className="btn ghost" onClick={() => setFeedExpanded(!feedExpanded)}>{feedExpanded ? "Show less" : `Show ${allFollowUps.length - 6} more`}</button>
-            </div>
-          )}
           {ackedFollowUps.length > 0 && (
-            <div style={{ textAlign: "center", padding: "6px 0 2px 0" }}>
+            <div style={{ textAlign: "center", padding: "8px 0 2px 0" }}>
               <button className="btn ghost" style={{ fontSize: 11, color: "var(--text-faint)" }} onClick={() => setShowAcked(!showAcked)}>{showAcked ? "Hide" : "Show"} {ackedFollowUps.length} acknowledged item{ackedFollowUps.length === 1 ? "" : "s"}</button>
             </div>
           )}
@@ -862,7 +916,28 @@ function DashboardView(props) {
       </div>
 
       <div className="grid two-col">
-        <div className="panel"><div className="panel-head"><div className="panel-title"><CalendarIcon size={13} /> Upcoming Events</div></div>
+        <div className="panel">
+          <div className="panel-head"><div className="panel-title"><ListChecks size={13} /> Memo Approval Pipeline</div>
+            <div className="panel-title-count">{pendingApprovals.length} in progress</div></div>
+          <div className="panel-body">
+            {pendingApprovals.length === 0 && <div className="panel-empty">Nothing currently in memo approval.</div>}
+            {pendingApprovals.map(sp => {
+              const cur = currentApprover(sp);
+              const doneCount = sp.approvals.filter(a => a.status === "Approved").length;
+              return (
+                <div className="row" key={sp.id} onClick={() => openDetail(sp.id, "approvals")}>
+                  <div style={{ flex: 1 }}>
+                    <div className="row-title">{sp.eventName}</div>
+                    <div className="row-sub">{doneCount}/{sp.approvals.length} approved{cur ? ` · awaiting ${cur.approver}` : ""}</div>
+                  </div>
+                  <span className="badge warn">{cur ? cur.approver : "Ready"}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="panel">
+          <div className="panel-head"><div className="panel-title"><CalendarIcon size={13} /> Upcoming Events</div></div>
           <div className="panel-body">
             {upcomingEvents.length === 0 && <div className="panel-empty">No events in the next 21 days.</div>}
             {upcomingEvents.map(s => (
@@ -872,70 +947,6 @@ function DashboardView(props) {
               </div>
             ))}
           </div>
-        </div>
-        <div className="panel"><div className="panel-head"><div className="panel-title"><Wifi size={13} /> Connectivity &amp; Device Returns</div></div>
-          <div className="panel-body">
-            {connectivityPending.length === 0 && deviceReturns.length === 0 && <div className="panel-empty">No pending technical items.</div>}
-            {connectivityPending.map(({ sp, c }) => (
-              <div className="row" key={"c-" + c.id} onClick={() => openDetail(sp.id)}>
-                <div style={{ flex: 1 }}><div className="row-title">{c.type}</div><div className="row-sub">{sp.eventName} · setup {fmtDate(c.setupDate)}</div></div>
-                <span className="badge warn">Setup Pending</span>
-              </div>
-            ))}
-            {deviceReturns.map(({ sp, c }) => (
-              <div className="row" key={"r-" + c.id} onClick={() => openDetail(sp.id)}>
-                <div style={{ flex: 1 }}><div className="row-title">{c.type} return — {sp.eventName}</div><div className="row-sub">Due {fmtDate(c.deviceReturnDate)}</div></div>
-                <span className="badge crit">Overdue</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid two-col">
-        <div className="panel"><div className="panel-head"><div className="panel-title"><CreditCard size={13} /> Pending Payments</div></div>
-          <div className="panel-body">
-            {pendingPayments.length === 0 && <div className="panel-empty">No pending payments.</div>}
-            {pendingPayments.map(s => (
-              <div className="row" key={s.id} onClick={() => openDetail(s.id)}>
-                <div style={{ flex: 1 }}><div className="row-title">{s.eventName}</div><div className="row-sub">PR: {s.payment.pr.status} · PO: {s.payment.po.status}</div></div>
-                <div className="row-amt mono">{fmtMVR(s.sponsorAmount)}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="panel"><div className="panel-head"><div className="panel-title"><FileText size={13} /> Recent Requests</div></div>
-          <div className="panel-body">
-            {recentRequests.map(s => (
-              <div className="row" key={s.id} onClick={() => openDetail(s.id)}>
-                <div style={{ flex: 1 }}><div className="row-title">{s.eventName}</div><div className="row-sub">{s.requestId} · received {fmtDate(s.receivedDate)}</div></div>
-                <span className={`badge ${stageBadgeClass(s.stage)}`}>{s.stage}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="panel"><div className="panel-head"><div className="panel-title"><Users size={13} /> Sponsors Requiring Action</div></div>
-        <div className="panel-body">
-          {sponsorsRequiringAction.length === 0 && <div className="panel-empty">No sponsors flagged.</div>}
-          {sponsorsRequiringAction.map(o => (
-            <div className="row" key={o.id} style={{ cursor: "default" }}>
-              <div style={{ flex: 1 }}><div className="row-title">{o.name}</div><div className="row-sub">{o.category}</div></div>
-              <span className="badge warn">Follow up</span>
-            </div>
-          ))}
-          {recentApprovals.length > 0 && (
-            <>
-              <div className="section-label" style={{ margin: "12px 8px 4px 8px" }}>Recent Approvals</div>
-              {recentApprovals.map(s => (
-                <div className="row" key={"ap-" + s.id} onClick={() => openDetail(s.id)}>
-                  <div style={{ flex: 1 }}><div className="row-title">{s.eventName}</div><div className="row-sub">Moved to {s.stage} on {fmtDate(s.stageEnteredDate)}</div></div>
-                  <CheckCircle2 size={14} color="var(--signal-ok)" />
-                </div>
-              ))}
-            </>
-          )}
         </div>
       </div>
     </>
@@ -1033,7 +1044,7 @@ function SponsorshipProfilesView({ sponsorships, openDetail }) {
 }
 
 /* ============================== CALENDAR ============================== */
-function CalendarView({ sponsorships, openDetail }) {
+function buildCalendarEvents(sponsorships) {
   const events = [];
   sponsorships.forEach(s => {
     events.push({ date: s.eventDate, type: "Event", label: s.eventName, sub: s.region, sp: s });
@@ -1043,44 +1054,149 @@ function CalendarView({ sponsorships, openDetail }) {
       if (c.deviceReturnDate) events.push({ date: c.deviceReturnDate, type: "Device Return", label: `${c.type} return — ${s.eventName}`, sub: c.type, sp: s });
     });
   });
-  const upcoming = events.filter(e => daysBetween(e.date, TODAY) >= -3).sort((a, b) => a.date - b.date);
-  const grouped = [];
-  upcoming.forEach(e => {
+  return events;
+}
+const CAL_TYPE_COLOR = { Event: "info", Payment: "warn", Connectivity: "neutral", "Device Return": "crit" };
+const CAL_TYPE_DOT = { Event: "var(--signal-info)", Payment: "var(--signal-warn)", Connectivity: "var(--signal-neutral)", "Device Return": "var(--signal-crit)" };
+
+function CalendarView({ sponsorships, openDetail }) {
+  const [mode, setMode] = useState("agenda"); // "agenda" | "month"
+  const [monthCursor, setMonthCursor] = useState(new Date(TODAY.getFullYear(), TODAY.getMonth(), 1));
+  const [selectedDay, setSelectedDay] = useState(null);
+  const events = useMemo(() => buildCalendarEvents(sponsorships), [sponsorships]);
+
+  const grouped = useMemo(() => {
+    const upcoming = events.filter(e => daysBetween(e.date, TODAY) >= -3).sort((a, b) => a.date - b.date);
+    const g = [];
+    upcoming.forEach(e => {
+      const key = e.date.toDateString();
+      let entry = g.find(x => x.key === key);
+      if (!entry) { entry = { key, date: e.date, items: [] }; g.push(entry); }
+      entry.items.push(e);
+    });
+    return g;
+  }, [events]);
+
+  return (
+    <div>
+      <div className="list-view-toolbar">
+        <div className={`filter-chip ${mode === "agenda" ? "active" : ""}`} onClick={() => setMode("agenda")}>Agenda</div>
+        <div className={`filter-chip ${mode === "month" ? "active" : ""}`} onClick={() => setMode("month")}>Month</div>
+      </div>
+      {mode === "agenda" ? (
+        <div className="panel">
+          <div className="panel-head"><div className="panel-title"><CalendarIcon size={13} /> Agenda</div></div>
+          <div className="panel-body pad">
+            {grouped.length === 0 && <div className="panel-empty">Nothing on the calendar.</div>}
+            {grouped.map(g => (
+              <div className="agenda-day" key={g.key}>
+                <div className="agenda-date">
+                  <div className="d disp">{g.date.getDate()}</div>
+                  <div className="m">{g.date.toLocaleDateString("en-GB", { month: "short" })}</div>
+                  {g.items.length >= 3 && <div className="badge warn" style={{ marginTop: 4, fontSize: 9 }}>Busy</div>}
+                </div>
+                <div className="agenda-items">
+                  {g.items.map((it, i) => (
+                    <div className="agenda-event" key={i} onClick={() => openDetail(it.sp.id)}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                        <span className={`badge ${CAL_TYPE_COLOR[it.type]}`}>{it.type}</span>
+                        {daysBetween(g.date, TODAY) < 0 && <span className="badge crit">Past due</span>}
+                      </div>
+                      <div className="row-title" style={{ fontSize: 12.5 }}>{it.label}</div>
+                      <div className="row-sub">{it.sub}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <MonthCalendar events={events} monthCursor={monthCursor} setMonthCursor={setMonthCursor}
+          selectedDay={selectedDay} setSelectedDay={setSelectedDay} openDetail={openDetail} />
+      )}
+    </div>
+  );
+}
+
+function MonthCalendar({ events, monthCursor, setMonthCursor, selectedDay, setSelectedDay, openDetail }) {
+  const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
+  const firstOfMonth = new Date(year, month, 1);
+  const startWeekday = firstOfMonth.getDay(); // 0 = Sunday
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let day = 1; day <= daysInMonth; day++) cells.push(new Date(year, month, day));
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const eventsByDay = {};
+  events.forEach(e => {
     const key = e.date.toDateString();
-    let g = grouped.find(x => x.key === key);
-    if (!g) { g = { key, date: e.date, items: [] }; grouped.push(g); }
-    g.items.push(e);
+    if (!eventsByDay[key]) eventsByDay[key] = [];
+    eventsByDay[key].push(e);
   });
-  const typeColor = { Event: "info", Payment: "warn", Connectivity: "neutral", "Device Return": "crit" };
+
+  const selectedItems = selectedDay ? (eventsByDay[selectedDay] || []) : [];
+
   return (
     <div className="panel">
-      <div className="panel-head"><div className="panel-title"><CalendarIcon size={13} /> Agenda</div></div>
+      <div className="panel-head">
+        <button className="btn ghost" style={{ padding: "5px 8px" }} onClick={() => { setMonthCursor(new Date(year, month - 1, 1)); setSelectedDay(null); }}><ChevronLeft size={14} /></button>
+        <div className="panel-title" style={{ margin: "0 8px" }}>{monthCursor.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
+        <button className="btn ghost" style={{ padding: "5px 8px" }} onClick={() => { setMonthCursor(new Date(year, month + 1, 1)); setSelectedDay(null); }}><ChevronRight size={14} /></button>
+        <button className="btn ghost" style={{ marginLeft: "auto", fontSize: 11 }} onClick={() => { setMonthCursor(new Date(TODAY.getFullYear(), TODAY.getMonth(), 1)); setSelectedDay(null); }}>Today</button>
+      </div>
       <div className="panel-body pad">
-        {grouped.map(g => (
-          <div className="agenda-day" key={g.key}>
-            <div className="agenda-date">
-              <div className="d disp">{g.date.getDate()}</div>
-              <div className="m">{g.date.toLocaleDateString("en-GB", { month: "short" })}</div>
-              {g.items.length >= 3 && <div className="badge warn" style={{ marginTop: 4, fontSize: 9 }}>Busy</div>}
-            </div>
-            <div className="agenda-items">
-              {g.items.map((it, i) => (
-                <div className="agenda-event" key={i} onClick={() => openDetail(it.sp.id)}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-                    <span className={`badge ${typeColor[it.type]}`}>{it.type}</span>
-                    {daysBetween(g.date, TODAY) < 0 && <span className="badge crit">Past due</span>}
-                  </div>
-                  <div className="row-title" style={{ fontSize: 12.5 }}>{it.label}</div>
-                  <div className="row-sub">{it.sub}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 6 }}>
+          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(d => (
+            <div key={d} style={{ fontSize: 10, color: "var(--text-faint)", textAlign: "center", fontWeight: 700, textTransform: "uppercase" }}>{d}</div>
+          ))}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+          {cells.map((date, i) => {
+            if (!date) return <div key={i} />;
+            const key = date.toDateString();
+            const items = eventsByDay[key] || [];
+            const isToday = key === TODAY.toDateString();
+            const isSelected = key === selectedDay;
+            const types = [...new Set(items.map(e => e.type))];
+            return (
+              <div key={i} onClick={() => items.length > 0 && setSelectedDay(isSelected ? null : key)}
+                style={{
+                  minHeight: 52, borderRadius: 8, padding: "5px 6px", cursor: items.length ? "pointer" : "default",
+                  background: isSelected ? "var(--panel-2)" : "var(--panel)",
+                  border: isToday ? "1px solid var(--brand)" : "1px solid var(--line-soft)",
+                }}>
+                <div style={{ fontSize: 11, fontWeight: isToday ? 700 : 500, color: isToday ? "#ff8095" : "var(--text-dim)" }}>{date.getDate()}</div>
+                <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 4 }}>
+                  {types.slice(0, 4).map(t => <div key={t} style={{ width: 6, height: 6, borderRadius: "50%", background: CAL_TYPE_DOT[t] }} />)}
                 </div>
-              ))}
-            </div>
+                {items.length >= 3 && <div style={{ fontSize: 8.5, color: "var(--signal-warn)", marginTop: 2, fontWeight: 700 }}>Busy</div>}
+              </div>
+            );
+          })}
+        </div>
+
+        {selectedDay && (
+          <div style={{ marginTop: 16, borderTop: "1px solid var(--line-soft)", paddingTop: 12 }}>
+            <div className="section-label" style={{ margin: "0 0 8px 0" }}>{new Date(selectedDay).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</div>
+            {selectedItems.map((it, i) => (
+              <div className="agenda-event" key={i} onClick={() => openDetail(it.sp.id)}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                  <span className={`badge ${CAL_TYPE_COLOR[it.type]}`}>{it.type}</span>
+                  {daysBetween(new Date(selectedDay), TODAY) < 0 && <span className="badge crit">Past due</span>}
+                </div>
+                <div className="row-title" style={{ fontSize: 12.5 }}>{it.label}</div>
+                <div className="row-sub">{it.sub}</div>
+              </div>
+            ))}
           </div>
-        ))}
+        )}
       </div>
     </div>
   );
 }
+
 
 /* ============================== NEW REQUEST FORM ============================== */
 function NewRequestForm({ onCreate, close }) {
@@ -1136,7 +1252,6 @@ const THRESHOLD_FIELDS = [
   { key: "connectivityWindowDays", label: "Start warning about setup this many days before the event", group: "Connectivity" },
   { key: "connectivityCriticalDays", label: "Escalate setup warning to Critical inside (days)", group: "Connectivity" },
   { key: "eventApprovalWindowDays", label: "Flag unapproved requests once event is within (days)", group: "Deadlines" },
-  { key: "monthlyReportStaleDays", label: "Escalate an unfiled monthly report after (days)", group: "Reporting" },
   { key: "intakeStallDays", label: "Escalate a stalled information request after (days)", group: "Intake" },
 ];
 
@@ -1415,14 +1530,14 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
               <div className="form-row-2">
                 <div><div className="kv-label">Status</div>
                   <select className="form-select" value={sp.payment.pr.status} onChange={e => updatePaymentSub(sp.id, "pr", { status: e.target.value })}>
-                    {["Not Started", "Raised", "Approved"].map(o => <option key={o}>{o}</option>)}
+                    {["N/A", "Not Required", "Not Started", "Raised", "Approved"].map(o => <option key={o}>{o}</option>)}
                   </select>
                 </div>
                 <div><div className="kv-label">Due Date</div><input type="date" className="form-input" value={dstr(sp.payment.pr.dueDate)} onChange={e => updatePaymentSub(sp.id, "pr", { dueDate: parseDateInput(e.target.value) })} /></div>
               </div>
             ) : (
               <div className="kv-grid" style={{ marginTop: 4 }}>
-                <div><div className="kv-label">Status</div><div className="kv-val"><span className={`badge ${sp.payment.pr.status === "Approved" ? "ok" : "warn"}`}>{sp.payment.pr.status}</span></div></div>
+                <div><div className="kv-label">Status</div><div className="kv-val"><span className={`badge ${["Approved","N/A","Not Required"].includes(sp.payment.pr.status) ? "ok" : "warn"}`}>{sp.payment.pr.status}</span></div></div>
                 <div><div className="kv-label">Due Date</div><div className="kv-val">{fmtDate(sp.payment.pr.dueDate)}</div></div>
               </div>
             )}
@@ -1432,14 +1547,14 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
               <div className="form-row-2">
                 <div><div className="kv-label">Status</div>
                   <select className="form-select" value={sp.payment.po.status} onChange={e => updatePaymentSub(sp.id, "po", { status: e.target.value })}>
-                    {["Not Started", "Raised", "Approved"].map(o => <option key={o}>{o}</option>)}
+                    {["N/A", "Not Required", "Not Started", "Raised", "Approved"].map(o => <option key={o}>{o}</option>)}
                   </select>
                 </div>
                 <div><div className="kv-label">Due Date</div><input type="date" className="form-input" value={dstr(sp.payment.po.dueDate)} onChange={e => updatePaymentSub(sp.id, "po", { dueDate: parseDateInput(e.target.value) })} /></div>
               </div>
             ) : (
               <div className="kv-grid" style={{ marginTop: 4 }}>
-                <div><div className="kv-label">Status</div><div className="kv-val"><span className={`badge ${sp.payment.po.status === "Approved" ? "ok" : "warn"}`}>{sp.payment.po.status}</span></div></div>
+                <div><div className="kv-label">Status</div><div className="kv-val"><span className={`badge ${["Approved","N/A","Not Required"].includes(sp.payment.po.status) ? "ok" : "warn"}`}>{sp.payment.po.status}</span></div></div>
                 <div><div className="kv-label">Due Date</div><div className="kv-val">{fmtDate(sp.payment.po.dueDate)}</div></div>
               </div>
             )}
