@@ -852,6 +852,18 @@ function DashboardView(props) {
   const flaggedCount = grouped.length;
   const onTrackCount = sponsorships.filter(s => !["Archived", "Rejected"].includes(s.stage)).length - flaggedCount;
 
+  const healthCounts = useMemo(() => {
+    const active = sponsorships.filter(s => !["Archived", "Rejected"].includes(s.stage));
+    let critical = 0, atRisk = 0, healthy = 0;
+    active.forEach(s => {
+      const st = computeHealth(s).status;
+      if (st === "critical") critical++;
+      else if (st === "at-risk" || st === "watch") atRisk++;
+      else healthy++;
+    });
+    return { critical, atRisk, healthy, total: active.length };
+  }, [sponsorships]);
+
   return (
     <>
       <div className="grid stat-row">
@@ -860,6 +872,8 @@ function DashboardView(props) {
         <StatCard label="Events (Next 21 Days)" num={upcomingEvents.length} icon={<CalendarIcon size={14} />} color="info" />
         <StatCard label="Pending Payments" num={pendingPaymentsCount} icon={<CreditCard size={14} />} color="warn" />
       </div>
+
+      <PortfolioHealthCard counts={healthCounts} />
 
       {/* Needs Attention — health + follow-ups combined, one line per project, expandable for detail */}
       <div className="panel" style={{ marginBottom: 16 }}>
@@ -952,6 +966,66 @@ function DashboardView(props) {
         </div>
       </div>
     </>
+  );
+}
+
+function PortfolioHealthCard({ counts }) {
+  const { critical, atRisk, healthy, total } = counts;
+  if (total === 0) return null;
+  const pct = (n) => Math.round((n / total) * 100);
+
+  const r = 52, sw = 18, cx = 60, cy = 60;
+  const circumference = 2 * Math.PI * r;
+  const segments = [
+    { value: critical, color: "var(--signal-crit)" },
+    { value: atRisk, color: "var(--signal-warn)" },
+    { value: healthy, color: "var(--signal-ok)" },
+  ].filter(s => s.value > 0);
+
+  let cumulative = 0;
+  const arcs = segments.map((seg, i) => {
+    const frac = seg.value / total;
+    const dash = frac * circumference;
+    const gap = circumference - dash;
+    const offset = -((cumulative / total) * circumference);
+    cumulative += seg.value;
+    return <circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={seg.color} strokeWidth={sw}
+      strokeDasharray={`${dash} ${gap}`} strokeDashoffset={offset} transform={`rotate(-90 ${cx} ${cy})`} strokeLinecap={segments.length > 1 ? "butt" : "round"} />;
+  });
+
+  const rows = [
+    { label: "Critical", n: critical, color: "var(--signal-crit)" },
+    { label: "At Risk / Watch", n: atRisk, color: "var(--signal-warn)" },
+    { label: "On Track", n: healthy, color: "var(--signal-ok)" },
+  ];
+
+  return (
+    <div className="panel" style={{ marginBottom: 16 }}>
+      <div className="panel-head"><div className="panel-title"><TrendingUp size={13} /> Portfolio Health</div>
+        <div className="panel-title-count">{total} active sponsorship{total === 1 ? "" : "s"}</div></div>
+      <div className="panel-body pad" style={{ display: "flex", alignItems: "center", gap: 28, flexWrap: "wrap" }}>
+        <div style={{ position: "relative", width: 120, height: 120, flexShrink: 0 }}>
+          <svg width="120" height="120" viewBox="0 0 120 120">
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--panel-2)" strokeWidth={sw} />
+            {arcs}
+          </svg>
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+            <div className="disp" style={{ fontSize: 22, fontWeight: 700 }}>{pct(healthy)}%</div>
+            <div style={{ fontSize: 9.5, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: ".04em" }}>On Track</div>
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          {rows.map(r => (
+            <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <div style={{ width: 10, height: 10, borderRadius: 3, background: r.color, flexShrink: 0 }} />
+              <div style={{ flex: 1, fontSize: 12.5, color: "var(--text-dim)" }}>{r.label}</div>
+              <div style={{ fontSize: 12.5, fontWeight: 700 }}>{r.n}</div>
+              <div style={{ fontSize: 11, color: "var(--text-faint)", width: 34, textAlign: "right" }}>{pct(r.n)}%</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1307,7 +1381,7 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
           <button className="btn ghost" onClick={close}><ArrowLeft size={13} /> Close</button>
           <div style={{ display: "flex", gap: 6 }}>
-            <button className={`btn ${editMode ? "primary" : ""}`} onClick={() => setEditMode(!editMode)}>{editMode ? "Done Editing" : "Edit"}</button>
+            <button className={`btn ${editMode ? "primary" : ""}`} onClick={() => setEditMode(!editMode)}>{editMode ? "Done Editing" : "Edit Details"}</button>
             <button className="close-btn" onClick={close}><X size={14} /></button>
           </div>
         </div>
@@ -1463,18 +1537,16 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
                     <div className="approver-name">{a.approver}</div>
                     {a.date && <div className="approver-date">{a.status} on {fmtDate(a.date)}</div>}
                   </div>
-                  {editMode ? (
-                    <select className="form-select" style={{ width: 130 }} value={a.status} onChange={e => setApproverStatus(sp.id, a.approver, e.target.value)}>
-                      <option value="Pending">Pending</option>
-                      <option value="Approved">Approved</option>
-                      <option value="Rejected">Rejected</option>
-                    </select>
-                  ) : <span className={`badge ${a.status === "Approved" ? "ok" : a.status === "Rejected" ? "crit" : "neutral"}`}>{a.status}</span>}
+                  <select className="form-select" style={{ width: 130 }} value={a.status} onChange={e => setApproverStatus(sp.id, a.approver, e.target.value)}>
+                    <option value="Pending">Pending</option>
+                    <option value="Approved">Approved</option>
+                    <option value="Rejected">Rejected</option>
+                  </select>
                 </div>
               );
             })}
             {!cur && sp.stage === "Memo Approval" && <button className="btn ok" style={{ marginTop: 8 }} onClick={() => setStageDirect(sp.id, "Approved")}>Advance to Approved →</button>}
-            {editMode && <button className="btn ghost" style={{ marginTop: 8, marginLeft: 8 }} onClick={() => resetApprovals(sp.id)}>Reset approval flow</button>}
+            <button className="btn ghost" style={{ marginTop: 8, marginLeft: 8 }} onClick={() => resetApprovals(sp.id)}>Reset approval flow</button>
           </>
         )}
 
@@ -1510,85 +1582,58 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
                 </div>
               );
             })}
-            {editMode && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
-                <input className="form-input" style={{ width: 160 }} placeholder="New deliverable name" value={newDl.name} onChange={e => setNewDl({ ...newDl, name: e.target.value })} />
-                <input className="form-input" style={{ width: 100 }} placeholder="Owner" value={newDl.owner} onChange={e => setNewDl({ ...newDl, owner: e.target.value })} />
-                <input type="date" className="form-input" style={{ width: 140 }} value={newDl.dueDate} onChange={e => setNewDl({ ...newDl, dueDate: e.target.value })} />
-                <button className="btn" disabled={!newDl.name.trim()} onClick={() => {
-                  if (!newDl.name.trim()) return;
-                  addDeliverable(sp.id, { name: newDl.name, owner: newDl.owner || "Unassigned", dueDate: parseDateInput(newDl.dueDate) || TODAY });
-                  setNewDl({ name: "", owner: "", dueDate: "" });
-                }}>+ Add</button>
-              </div>
-            )}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
+              <input className="form-input" style={{ width: 160 }} placeholder="New deliverable name" value={newDl.name} onChange={e => setNewDl({ ...newDl, name: e.target.value })} />
+              <input className="form-input" style={{ width: 100 }} placeholder="Owner" value={newDl.owner} onChange={e => setNewDl({ ...newDl, owner: e.target.value })} />
+              <input type="date" className="form-input" style={{ width: 140 }} value={newDl.dueDate} onChange={e => setNewDl({ ...newDl, dueDate: e.target.value })} />
+              <button className="btn" disabled={!newDl.name.trim()} onClick={() => {
+                if (!newDl.name.trim()) return;
+                addDeliverable(sp.id, { name: newDl.name, owner: newDl.owner || "Unassigned", dueDate: parseDateInput(newDl.dueDate) || TODAY });
+                setNewDl({ name: "", owner: "", dueDate: "" });
+              }}>+ Add</button>
+            </div>
           </>
         )}
 
         {tab === "payment" && sp.payment && (
           <>
             <div className="section-label">PR Issuance</div>
-            {editMode ? (
-              <div className="form-row-2">
-                <div><div className="kv-label">Status</div>
-                  <select className="form-select" value={sp.payment.pr.status} onChange={e => updatePaymentSub(sp.id, "pr", { status: e.target.value })}>
-                    {["N/A", "Not Required", "Not Started", "Raised", "Approved"].map(o => <option key={o}>{o}</option>)}
-                  </select>
-                </div>
-                <div><div className="kv-label">Due Date</div><input type="date" className="form-input" value={dstr(sp.payment.pr.dueDate)} onChange={e => updatePaymentSub(sp.id, "pr", { dueDate: parseDateInput(e.target.value) })} /></div>
+            <div className="form-row-2">
+              <div><div className="kv-label">Status</div>
+                <select className="form-select" value={sp.payment.pr.status} onChange={e => updatePaymentSub(sp.id, "pr", { status: e.target.value })}>
+                  {["N/A", "Not Required", "Not Started", "Raised", "Approved"].map(o => <option key={o}>{o}</option>)}
+                </select>
               </div>
-            ) : (
-              <div className="kv-grid" style={{ marginTop: 4 }}>
-                <div><div className="kv-label">Status</div><div className="kv-val"><span className={`badge ${["Approved","N/A","Not Required"].includes(sp.payment.pr.status) ? "ok" : "warn"}`}>{sp.payment.pr.status}</span></div></div>
-                <div><div className="kv-label">Due Date</div><div className="kv-val">{fmtDate(sp.payment.pr.dueDate)}</div></div>
-              </div>
-            )}
+              <div><div className="kv-label">Due Date</div><input type="date" className="form-input" value={dstr(sp.payment.pr.dueDate)} onChange={e => updatePaymentSub(sp.id, "pr", { dueDate: parseDateInput(e.target.value) })} /></div>
+            </div>
 
             <div className="section-label">PO Issuance</div>
-            {editMode ? (
-              <div className="form-row-2">
-                <div><div className="kv-label">Status</div>
-                  <select className="form-select" value={sp.payment.po.status} onChange={e => updatePaymentSub(sp.id, "po", { status: e.target.value })}>
-                    {["N/A", "Not Required", "Not Started", "Raised", "Approved"].map(o => <option key={o}>{o}</option>)}
-                  </select>
-                </div>
-                <div><div className="kv-label">Due Date</div><input type="date" className="form-input" value={dstr(sp.payment.po.dueDate)} onChange={e => updatePaymentSub(sp.id, "po", { dueDate: parseDateInput(e.target.value) })} /></div>
+            <div className="form-row-2">
+              <div><div className="kv-label">Status</div>
+                <select className="form-select" value={sp.payment.po.status} onChange={e => updatePaymentSub(sp.id, "po", { status: e.target.value })}>
+                  {["N/A", "Not Required", "Not Started", "Raised", "Approved"].map(o => <option key={o}>{o}</option>)}
+                </select>
               </div>
-            ) : (
-              <div className="kv-grid" style={{ marginTop: 4 }}>
-                <div><div className="kv-label">Status</div><div className="kv-val"><span className={`badge ${["Approved","N/A","Not Required"].includes(sp.payment.po.status) ? "ok" : "warn"}`}>{sp.payment.po.status}</span></div></div>
-                <div><div className="kv-label">Due Date</div><div className="kv-val">{fmtDate(sp.payment.po.dueDate)}</div></div>
-              </div>
-            )}
+              <div><div className="kv-label">Due Date</div><input type="date" className="form-input" value={dstr(sp.payment.po.dueDate)} onChange={e => updatePaymentSub(sp.id, "po", { dueDate: parseDateInput(e.target.value) })} /></div>
+            </div>
 
             <div className="section-label">Payment</div>
-            {editMode ? (
-              <>
-                <div className="form-row-2">
-                  <div><div className="kv-label">Invoice Status</div>
-                    <select className="form-select" value={sp.payment.invoiceStatus} onChange={e => updatePaymentTop(sp.id, { invoiceStatus: e.target.value })}>
-                      {["N/A", "Not Required", "Pending", "Received"].map(o => <option key={o}>{o}</option>)}
-                    </select>
-                  </div>
-                  <div><div className="kv-label">Payment Status</div>
-                    <select className="form-select" value={sp.payment.payment.status} onChange={e => updatePaymentSub(sp.id, "payment", { status: e.target.value })}>
-                      {["N/A", "Pending", "Paid"].map(o => <option key={o}>{o}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div className="form-row-2">
-                  <div><div className="kv-label">Payment Due</div><input type="date" className="form-input" value={dstr(sp.payment.payment.dueDate)} onChange={e => updatePaymentSub(sp.id, "payment", { dueDate: parseDateInput(e.target.value) })} /></div>
-                  <div><div className="kv-label">Finance Follow-up</div><input type="date" className="form-input" value={dstr(sp.payment.financeFollowUpDate)} onChange={e => updatePaymentTop(sp.id, { financeFollowUpDate: parseDateInput(e.target.value) })} /></div>
-                </div>
-              </>
-            ) : (
-              <div className="kv-grid" style={{ marginTop: 4 }}>
-                <div><div className="kv-label">Invoice Status</div><div className="kv-val">{sp.payment.invoiceStatus}</div></div>
-                <div><div className="kv-label">Payment Status</div><div className="kv-val"><span className={`badge ${sp.payment.payment.status === "Paid" ? "ok" : sp.payment.payment.status === "Pending" ? "warn" : "neutral"}`}>{sp.payment.payment.status}</span></div></div>
-                <div><div className="kv-label">Payment Due</div><div className="kv-val">{fmtDate(sp.payment.payment.dueDate)}</div></div>
-                <div><div className="kv-label">Finance Follow-up</div><div className="kv-val">{fmtDate(sp.payment.financeFollowUpDate)}</div></div>
+            <div className="form-row-2">
+              <div><div className="kv-label">Invoice Status</div>
+                <select className="form-select" value={sp.payment.invoiceStatus} onChange={e => updatePaymentTop(sp.id, { invoiceStatus: e.target.value })}>
+                  {["N/A", "Not Required", "Pending", "Received"].map(o => <option key={o}>{o}</option>)}
+                </select>
               </div>
-            )}
+              <div><div className="kv-label">Payment Status</div>
+                <select className="form-select" value={sp.payment.payment.status} onChange={e => updatePaymentSub(sp.id, "payment", { status: e.target.value })}>
+                  {["N/A", "Pending", "Paid"].map(o => <option key={o}>{o}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="form-row-2">
+              <div><div className="kv-label">Payment Due</div><input type="date" className="form-input" value={dstr(sp.payment.payment.dueDate)} onChange={e => updatePaymentSub(sp.id, "payment", { dueDate: parseDateInput(e.target.value) })} /></div>
+              <div><div className="kv-label">Finance Follow-up</div><input type="date" className="form-input" value={dstr(sp.payment.financeFollowUpDate)} onChange={e => updatePaymentTop(sp.id, { financeFollowUpDate: parseDateInput(e.target.value) })} /></div>
+            </div>
           </>
         )}
 
@@ -1598,66 +1643,47 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
             {(!sp.connectivity || sp.connectivity.length === 0) && <div className="panel-empty">No connectivity items yet.</div>}
             {(sp.connectivity || []).map(c => (
               <div className="conn-item" key={c.id}>
-                {editMode ? (
-                  <>
-                    <div className="form-row-2">
-                      <div><div className="kv-label">Type</div>
-                        <select className="form-select" value={c.type} onChange={e => updateConnectivityItem(sp.id, c.id, { type: e.target.value, needsReturn: HARDWARE_TYPES.includes(e.target.value) })}>
-                          {CONNECTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
-                        </select>
-                      </div>
-                      <div><div className="kv-label">Technical Team</div><input className="form-input" value={c.technicalTeam} onChange={e => updateConnectivityItem(sp.id, c.id, { technicalTeam: e.target.value })} /></div>
+                <div className="form-row-2">
+                  <div><div className="kv-label">Type</div>
+                    <select className="form-select" value={c.type} onChange={e => updateConnectivityItem(sp.id, c.id, { type: e.target.value, needsReturn: HARDWARE_TYPES.includes(e.target.value) })}>
+                      {CONNECTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
+                    </select>
+                  </div>
+                  <div><div className="kv-label">Technical Team</div><input className="form-input" value={c.technicalTeam} onChange={e => updateConnectivityItem(sp.id, c.id, { technicalTeam: e.target.value })} /></div>
+                </div>
+                <div className="form-row-2">
+                  <div><div className="kv-label">Setup Date</div><input type="date" className="form-input" value={dstr(c.setupDate)} onChange={e => updateConnectivityItem(sp.id, c.id, { setupDate: parseDateInput(e.target.value) })} /></div>
+                  <div><div className="kv-label">Setup Status</div>
+                    <select className="form-select" value={c.setupStatus} onChange={e => updateConnectivityItem(sp.id, c.id, { setupStatus: e.target.value })}>
+                      {["Not Started", "Pending Setup", "Completed"].map(o => <option key={o}>{o}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="form-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="checkbox" checked={c.needsReturn} onChange={e => updateConnectivityItem(sp.id, c.id, { needsReturn: e.target.checked })} />
+                  <span style={{ fontSize: 12, color: "var(--text-dim)" }}>This item involves hardware that needs to be returned</span>
+                </div>
+                {c.needsReturn && (
+                  <div className="form-row-2">
+                    <div><div className="kv-label">Device Return Date</div><input type="date" className="form-input" value={dstr(c.deviceReturnDate)} onChange={e => updateConnectivityItem(sp.id, c.id, { deviceReturnDate: parseDateInput(e.target.value) })} /></div>
+                    <div><div className="kv-label">Return Status</div>
+                      <select className="form-select" value={c.deviceReturnStatus || ""} onChange={e => updateConnectivityItem(sp.id, c.id, { deviceReturnStatus: e.target.value || null })}>
+                        <option value="">Not yet due</option>
+                        <option value="Pending Return">Pending Return</option>
+                        <option value="Returned">Returned</option>
+                      </select>
                     </div>
-                    <div className="form-row-2">
-                      <div><div className="kv-label">Setup Date</div><input type="date" className="form-input" value={dstr(c.setupDate)} onChange={e => updateConnectivityItem(sp.id, c.id, { setupDate: parseDateInput(e.target.value) })} /></div>
-                      <div><div className="kv-label">Setup Status</div>
-                        <select className="form-select" value={c.setupStatus} onChange={e => updateConnectivityItem(sp.id, c.id, { setupStatus: e.target.value })}>
-                          {["Not Started", "Pending Setup", "Completed"].map(o => <option key={o}>{o}</option>)}
-                        </select>
-                      </div>
-                    </div>
-                    <div className="form-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <input type="checkbox" checked={c.needsReturn} onChange={e => updateConnectivityItem(sp.id, c.id, { needsReturn: e.target.checked })} />
-                      <span style={{ fontSize: 12, color: "var(--text-dim)" }}>This item involves hardware that needs to be returned</span>
-                    </div>
-                    {c.needsReturn && (
-                      <div className="form-row-2">
-                        <div><div className="kv-label">Device Return Date</div><input type="date" className="form-input" value={dstr(c.deviceReturnDate)} onChange={e => updateConnectivityItem(sp.id, c.id, { deviceReturnDate: parseDateInput(e.target.value) })} /></div>
-                        <div><div className="kv-label">Return Status</div>
-                          <select className="form-select" value={c.deviceReturnStatus || ""} onChange={e => updateConnectivityItem(sp.id, c.id, { deviceReturnStatus: e.target.value || null })}>
-                            <option value="">Not yet due</option>
-                            <option value="Pending Return">Pending Return</option>
-                            <option value="Returned">Returned</option>
-                          </select>
-                        </div>
-                      </div>
-                    )}
-                    <button className="btn danger" onClick={() => removeConnectivityItem(sp.id, c.id)}>Remove this item</button>
-                  </>
-                ) : (
-                  <div className="kv-grid" style={{ margin: 0 }}>
-                    <div><div className="kv-label">Type</div><div className="kv-val">{c.type}</div></div>
-                    <div><div className="kv-label">Technical Team</div><div className="kv-val">{c.technicalTeam || "—"}</div></div>
-                    <div><div className="kv-label">Setup Date</div><div className="kv-val">{fmtDate(c.setupDate)}</div></div>
-                    <div><div className="kv-label">Setup Status</div><div className="kv-val"><span className={`badge ${c.setupStatus === "Completed" ? "ok" : "warn"}`}>{c.setupStatus}</span></div></div>
-                    {c.needsReturn && (
-                      <>
-                        <div><div className="kv-label">Device Return Date</div><div className="kv-val">{fmtDate(c.deviceReturnDate)}</div></div>
-                        <div><div className="kv-label">Return Status</div><div className="kv-val"><span className={`badge ${c.deviceReturnStatus === "Pending Return" ? "crit" : "ok"}`}>{c.deviceReturnStatus || "—"}</span></div></div>
-                      </>
-                    )}
                   </div>
                 )}
+                <button className="btn danger" onClick={() => removeConnectivityItem(sp.id, c.id)}>Remove this item</button>
               </div>
             ))}
-            {editMode && (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
-                <select className="form-select" style={{ width: 200 }} value={newConn.type} onChange={e => setNewConn({ type: e.target.value })}>
-                  {CONNECTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
-                </select>
-                <button className="btn" onClick={() => addConnectivity(sp.id, { type: newConn.type })}>+ Add connectivity item</button>
-              </div>
-            )}
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+              <select className="form-select" style={{ width: 200 }} value={newConn.type} onChange={e => setNewConn({ type: e.target.value })}>
+                {CONNECTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
+              </select>
+              <button className="btn" onClick={() => addConnectivity(sp.id, { type: newConn.type })}>+ Add connectivity item</button>
+            </div>
           </>
         )}
 
