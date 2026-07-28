@@ -2,10 +2,11 @@
 
 import { useState, useMemo, useEffect } from "react";
 import * as XLSX from "xlsx";
+import { supabase } from "../lib/supabaseClient";
 import {
   LayoutDashboard, ListChecks, Users, Calendar as CalendarIcon, Search, Bell,
   Wifi, CreditCard, Clock, AlertTriangle, CheckCircle2, ChevronRight, ChevronDown, ChevronLeft, X,
-  ArrowLeft, Building2, FileText, TrendingUp, Circle, MapPin, Settings as SettingsIcon, Download
+  ArrowLeft, Building2, FileText, TrendingUp, Circle, MapPin, Settings as SettingsIcon, Download, LogOut
 } from "lucide-react";
 
 /* ============================== DESIGN TOKENS ============================== */
@@ -220,6 +221,68 @@ function dstr(dt) {
   return `${y}-${m}-${day}`;
 }
 function parseDateInput(v) { return v ? new Date(v + "T00:00:00") : null; }
+
+// ---- Supabase row <-> app-object conversion ----
+// Supabase stores dates as plain strings inside jsonb; the app works with real
+// Date objects everywhere else (deliverables, approvals, payment, connectivity all
+// nest dates). These two functions are the single place that translation happens.
+function dlToDb(dl) { return { ...dl, dueDate: dstr(dl.dueDate) }; }
+function dlFromDb(dl) { return { ...dl, dueDate: parseDateInput(dl.dueDate) }; }
+function apprToDb(a) { return { ...a, date: dstr(a.date) }; }
+function apprFromDb(a) { return { ...a, date: parseDateInput(a.date) }; }
+function connToDb(c) { return { ...c, setupDate: dstr(c.setupDate), deviceReturnDate: dstr(c.deviceReturnDate) }; }
+function connFromDb(c) { return { ...c, setupDate: parseDateInput(c.setupDate), deviceReturnDate: parseDateInput(c.deviceReturnDate) }; }
+function paymentToDb(p) {
+  return {
+    invoiceStatus: p.invoiceStatus,
+    pr: { ...p.pr, dueDate: dstr(p.pr.dueDate) },
+    po: { ...p.po, dueDate: dstr(p.po.dueDate) },
+    payment: { ...p.payment, dueDate: dstr(p.payment.dueDate) },
+    financeFollowUpDate: dstr(p.financeFollowUpDate),
+  };
+}
+function paymentFromDb(p) {
+  if (!p || !p.pr) return seedPayment();
+  return {
+    invoiceStatus: p.invoiceStatus,
+    pr: { ...p.pr, dueDate: parseDateInput(p.pr.dueDate) },
+    po: { ...p.po, dueDate: parseDateInput(p.po.dueDate) },
+    payment: { ...p.payment, dueDate: parseDateInput(p.payment.dueDate) },
+    financeFollowUpDate: parseDateInput(p.financeFollowUpDate),
+  };
+}
+function spToDbRow(sp, userId) {
+  return {
+    id: sp.id, user_id: userId, request_id: sp.requestId, event_name: sp.eventName, organizer: sp.organizer,
+    event_type: sp.eventType, region: sp.region, value_type: sp.valueType, sponsor_amount: sp.sponsorAmount,
+    in_kind_details: sp.inKindDetails, sponsorship_type: sp.sponsorshipType, stage: sp.stage,
+    stage_entered_date: dstr(sp.stageEnteredDate), received_date: dstr(sp.receivedDate), event_date: dstr(sp.eventDate),
+    memo_number: sp.memoNumber, budget_code: sp.budgetCode, background: sp.background, benefits: sp.benefits,
+    justification: sp.justification, duration: sp.duration, notes: sp.notes,
+    approvals: (sp.approvals || []).map(apprToDb),
+    deliverables: (sp.deliverables || []).map(dlToDb),
+    payment: paymentToDb(sp.payment),
+    connectivity: (sp.connectivity || []).map(connToDb),
+    tasks: sp.tasks || [],
+  };
+}
+function spFromDbRow(row) {
+  return {
+    id: row.id, requestId: row.request_id, eventName: row.event_name, organizer: row.organizer,
+    eventType: row.event_type || "", region: row.region || "", valueType: row.value_type || "Cash",
+    sponsorAmount: row.sponsor_amount || 0, inKindDetails: row.in_kind_details || "", sponsorshipType: row.sponsorship_type || "",
+    stage: row.stage, stageEnteredDate: parseDateInput(row.stage_entered_date) || TODAY,
+    receivedDate: parseDateInput(row.received_date) || TODAY, eventDate: parseDateInput(row.event_date) || TODAY,
+    memoNumber: row.memo_number || "", budgetCode: row.budget_code || "", background: row.background || "",
+    benefits: row.benefits || "", justification: row.justification || "", duration: row.duration || "", notes: row.notes || "",
+    approvals: (row.approvals || []).map(apprFromDb),
+    deliverables: (row.deliverables || []).map(dlFromDb),
+    payment: paymentFromDb(row.payment),
+    connectivity: (row.connectivity || []).map(connFromDb),
+    tasks: row.tasks || [],
+  };
+}
+
 function fmtDate(dt) {
   if (!dt) return "—";
   return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
@@ -245,6 +308,14 @@ function currentApprover(sp) { return (sp.approvals || []).find(a => a.status ==
 
 const CONNECTIVITY_TYPES = ["ILL Connection", "5G AirFibre", "SIM with Data Package", "SuperNet Connection", "MiFi Device", "Existing SIM Package Upgrade"];
 const HARDWARE_TYPES = ["5G AirFibre", "MiFi Device"]; // types that typically need a device return
+
+// Sponsor Deliverables = what we agree to provide the partner (connectivity, cash,
+// tents, event support, backdrop printing, giveaways, merch, marketing support).
+// Partner Deliverables = what the partner agrees to provide us in return
+// (sponsorship tier status, logo/branding, social media, complimentary slots, stall
+// space, PR opportunities). Kept as a tag on each deliverable rather than two
+// separate lists so status-cycling, due dates, and follow-ups all work identically.
+const DELIVERABLE_CATEGORIES = ["Sponsor", "Partner"];
 
 const SUGGESTED_TASKS = {
   "New Request": ["Read proposal", "Validate mandatory information", "Log request and assign Request ID"],
@@ -286,12 +357,13 @@ const SEED_SPONSORSHIPS = [
     benefits: "Logo on all branding, MC mentions, booth space, social media coverage.", justification: "Aligns with youth & community engagement pillar.", duration: "1 day event",
     approvals: APPROVAL_CHAIN.map(a => ({ approver: a, status: "Approved", date: d("2026-07-05") })),
     deliverables: [
-      { id: "dl1", name: "Logo Placement", owner: "Mua", dueDate: d("2026-08-10"), status: "Done", evidence: "Banner proof received", notes: "" },
-      { id: "dl2", name: "Booth", owner: "Events Team", dueDate: d("2026-08-14"), status: "In Progress", evidence: "", notes: "Booth layout confirmed" },
-      { id: "dl3", name: "MC Mentions", owner: "Mua", dueDate: d("2026-08-15"), status: "Pending", evidence: "", notes: "" },
-      { id: "dl4", name: "Facebook Post", owner: "Social Media Team", dueDate: d("2026-08-16"), status: "Pending", evidence: "", notes: "" },
-      { id: "dl5", name: "Photos Received", owner: "Organizer", dueDate: d("2026-08-17"), status: "Pending", evidence: "", notes: "" },
-      { id: "dl6", name: "Monthly Report", owner: "Mua", dueDate: d("2026-09-05"), status: "Pending", evidence: "", notes: "" },
+      { id: "dl1", name: "Connectivity Setup", category: "Sponsor", owner: "Technical Team", dueDate: d("2026-08-13"), status: "In Progress", evidence: "", notes: "" },
+      { id: "dl2", name: "Tent & Backdrop Printing", category: "Sponsor", owner: "Events Team", dueDate: d("2026-08-14"), status: "In Progress", evidence: "", notes: "Booth layout confirmed" },
+      { id: "dl3", name: "Giveaway Gifts", category: "Sponsor", owner: "Mua", dueDate: d("2026-08-14"), status: "Pending", evidence: "", notes: "" },
+      { id: "dl4", name: "Logo Placement", category: "Partner", owner: "Organizer", dueDate: d("2026-08-10"), status: "Done", evidence: "Banner proof received", notes: "" },
+      { id: "dl5", name: "MC Mentions", category: "Partner", owner: "Organizer", dueDate: d("2026-08-15"), status: "Pending", evidence: "", notes: "" },
+      { id: "dl6", name: "Social Media Post", category: "Partner", owner: "Organizer", dueDate: d("2026-08-16"), status: "Pending", evidence: "", notes: "" },
+      { id: "dl7", name: "Photos & Media Coverage", category: "Partner", owner: "Organizer", dueDate: d("2026-08-17"), status: "Pending", evidence: "", notes: "" },
     ],
     payment: seedPayment({
       invoiceStatus: "Received",
@@ -321,8 +393,8 @@ const SEED_SPONSORSHIPS = [
       { approver: "CEO", status: "Pending", date: null },
     ],
     deliverables: [
-      { id: "dl1", name: "Venue Booking", owner: "CSR Team", dueDate: d("2026-07-25"), status: "In Progress", evidence: "", notes: "" },
-      { id: "dl2", name: "Activity Plan", owner: "Mua", dueDate: d("2026-07-24"), status: "Pending", evidence: "", notes: "" },
+      { id: "dl1", name: "Venue Booking", category: "Sponsor", owner: "CSR Team", dueDate: d("2026-07-25"), status: "In Progress", evidence: "", notes: "" },
+      { id: "dl2", name: "Activity Plan", category: "Sponsor", owner: "Mua", dueDate: d("2026-07-24"), status: "Pending", evidence: "", notes: "" },
     ],
     payment: seedPayment(), connectivity: [], notes: "", tasks: [],
   },
@@ -341,8 +413,8 @@ const SEED_SPONSORSHIPS = [
       { approver: "CEO", status: "Pending", date: null },
     ],
     deliverables: [
-      { id: "dl1", name: "Logo Placement", owner: "Mua", dueDate: d("2026-07-25"), status: "Pending", evidence: "", notes: "" },
-      { id: "dl2", name: "Media Coverage", owner: "Organizer", dueDate: d("2026-07-29"), status: "Pending", evidence: "", notes: "" },
+      { id: "dl1", name: "Logo Placement", category: "Partner", owner: "Organizer", dueDate: d("2026-07-25"), status: "Pending", evidence: "", notes: "" },
+      { id: "dl2", name: "Media Coverage", category: "Partner", owner: "Organizer", dueDate: d("2026-07-29"), status: "Pending", evidence: "", notes: "" },
     ],
     payment: seedPayment({ invoiceStatus: "Pending", payment: { status: "Pending", dueDate: d("2026-07-26"), owner: "Finance" }, financeFollowUpDate: d("2026-07-20") }),
     connectivity: [], notes: "", tasks: [],
@@ -355,7 +427,7 @@ const SEED_SPONSORSHIPS = [
     background: "Multi-atoll swimming championship requiring live results connectivity.", benefits: "Branding, connectivity naming rights, VIP access.",
     justification: "High visibility national sports event.", duration: "3 days",
     approvals: initApprovals(),
-    deliverables: [{ id: "dl1", name: "Evaluation Notes", owner: "Mua", dueDate: d("2026-07-24"), status: "In Progress", evidence: "", notes: "" }],
+    deliverables: [{ id: "dl1", name: "Evaluation Notes", category: "Sponsor", owner: "Mua", dueDate: d("2026-07-24"), status: "In Progress", evidence: "", notes: "" }],
     payment: seedPayment(),
     connectivity: [
       { id: "c1", type: "ILL Connection", technicalTeam: "Network Ops", setupDate: d("2026-08-30"), setupStatus: "Not Started", needsReturn: false, deviceReturnDate: null, deviceReturnStatus: null },
@@ -439,15 +511,18 @@ function generateFollowUps(sp) {
     }
   });
 
-  if (sp.deliverables && sp.deliverables.length) {
-    // Overdue = due date has passed (TODAY is after the due date). Previously inverted — fixed.
-    const overdueItems = sp.deliverables.filter(x => x.status !== "Done" && daysBetween(TODAY, x.dueDate) > 0);
-    if (overdueItems.length > 0 && !["Rejected", "Archived"].includes(sp.stage)) {
-      items.push({
-        text: `${overdueItems.length} deliverable${overdueItems.length === 1 ? "" : "s"} past due date (${overdueItems.map(x => x.name).join(", ")}).`,
-        level: 4, category: "Deliverables", owner: "You", sortDate: overdueItems.sort((a, b) => a.dueDate - b.dueDate)[0].dueDate,
-      });
-    }
+  if (sp.deliverables && sp.deliverables.length && !["Rejected", "Archived"].includes(sp.stage)) {
+    // Overdue = due date has passed (TODAY is after the due date).
+    DELIVERABLE_CATEGORIES.forEach(cat => {
+      const overdueItems = sp.deliverables.filter(x => (x.category || "Sponsor") === cat && x.status !== "Done" && daysBetween(TODAY, x.dueDate) > 0);
+      if (overdueItems.length > 0) {
+        items.push({
+          text: `${overdueItems.length} ${cat} Deliverable${overdueItems.length === 1 ? "" : "s"} past due (${overdueItems.map(x => x.name).join(", ")}).`,
+          level: 4, category: `${cat} Deliverables`, owner: cat === "Sponsor" ? "You" : "Organizer",
+          sortDate: overdueItems.sort((a, b) => a.dueDate - b.dueDate)[0].dueDate,
+        });
+      }
+    });
   }
   if (daysToEvent >= 0 && daysToEvent <= T.eventApprovalWindowDays && !["Approved", "Execution", "Completed", "Archived", "Rejected"].includes(sp.stage)) {
     items.push({ text: `Event starts in ${daysToEvent} day${daysToEvent === 1 ? "" : "s"} — sponsorship not yet approved.`, level: 4, category: "Deadline", owner: "You", sortDate: sp.eventDate });
@@ -492,7 +567,12 @@ function levelBadge(level) {
 
 /* ============================== MAIN APP ============================== */
 export default function SponsorshipTracker() {
-  const [sponsorships, setSponsorships] = useState(SEED_SPONSORSHIPS);
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [dataError, setDataError] = useState("");
+
+  const [sponsorships, setSponsorships] = useState([]);
   const [view, setView] = useState("dashboard");
   const [selectedId, setSelectedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -508,30 +588,52 @@ export default function SponsorshipTracker() {
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState(false);
 
+  // Auth: check for an existing session on load, and keep listening for
+  // sign-in / sign-out so the UI reacts immediately either way.
   useEffect(() => {
-    try {
-      const a = localStorage.getItem("sot:acknowledged");
-      if (a) setDismissed(JSON.parse(a));
-    } catch (e) { /* no saved acknowledgements yet */ }
-    try {
-      const t = localStorage.getItem("sot:thresholds");
-      if (t) setThresholds({ ...DEFAULT_THRESHOLDS, ...JSON.parse(t) });
-    } catch (e) { /* no saved thresholds yet */ }
-    setLoaded(true);
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthLoading(false); });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, sess) => setSession(sess));
+    return () => listener.subscription.unsubscribe();
   }, []);
+
+  // Once logged in, load this user's sponsorships and settings from Supabase.
+  useEffect(() => {
+    if (!session) { setSponsorships([]); setLoaded(false); return; }
+    let cancelled = false;
+    (async () => {
+      setDataLoading(true);
+      setDataError("");
+      try {
+        const [{ data: rows, error: spErr }, { data: settingsRow, error: setErr }] = await Promise.all([
+          supabase.from("sponsorships").select("*").order("received_date", { ascending: false }),
+          supabase.from("app_settings").select("*").eq("user_id", session.user.id).maybeSingle(),
+        ]);
+        if (spErr) throw spErr;
+        if (setErr) throw setErr;
+        if (cancelled) return;
+        setSponsorships((rows || []).map(spFromDbRow));
+        if (settingsRow) {
+          if (settingsRow.thresholds) setThresholds({ ...DEFAULT_THRESHOLDS, ...settingsRow.thresholds });
+          if (settingsRow.acknowledged) setDismissed(settingsRow.acknowledged);
+        }
+      } catch (e) {
+        if (!cancelled) setDataError(e.message || "Couldn't load your data from Supabase.");
+      } finally {
+        if (!cancelled) { setDataLoading(false); setLoaded(true); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [session]);
 
   THRESHOLDS = thresholds;
 
+  // Persist acknowledged follow-ups + threshold settings to Supabase (debounced-ish via `loaded` guard
+  // so we don't write on the initial load we just fetched).
   useEffect(() => {
-    if (!loaded) return;
-    try { localStorage.setItem("sot:acknowledged", JSON.stringify(dismissed)); setSaveError(false); }
-    catch (e) { setSaveError(true); }
-  }, [dismissed, loaded]);
-
-  useEffect(() => {
-    if (!loaded) return;
-    try { localStorage.setItem("sot:thresholds", JSON.stringify(thresholds)); } catch (e) { /* best effort */ }
-  }, [thresholds, loaded]);
+    if (!loaded || !session) return;
+    supabase.from("app_settings").upsert({ user_id: session.user.id, thresholds, acknowledged: dismissed, updated_at: new Date().toISOString() })
+      .then(({ error }) => setSaveError(!!error));
+  }, [dismissed, thresholds, loaded, session]);
 
   const allFollowUpsRaw = useMemo(() => {
     const arr = sponsorships.flatMap(generateFollowUps);
@@ -552,8 +654,29 @@ export default function SponsorshipTracker() {
     return `SP-2026-${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(3, "0")}`;
   }
 
+  // Every mutator below updates local state immediately (so the UI never waits
+  // on the network) and pushes the resulting row to Supabase in the background.
+  // If a save fails, it's logged and surfaced via dataError rather than silently lost.
+  function persist(sp) {
+    if (!session) return;
+    supabase.from("sponsorships").update(spToDbRow(sp, session.user.id)).eq("id", sp.id)
+      .then(({ error }) => { if (error) setDataError("Couldn't save a change: " + error.message); });
+  }
+  function applyAndPersist(spId, updater) {
+    setSponsorships(prev => {
+      let updated = null;
+      const next = prev.map(s => {
+        if (s.id !== spId) return s;
+        updated = updater(s);
+        return updated;
+      });
+      if (updated) persist(updated);
+      return next;
+    });
+  }
+
   function createSponsorship(data) {
-    const id = "sp-" + Date.now();
+    const id = crypto.randomUUID();
     const newSp = {
       id, requestId: nextRequestId(), eventName: data.eventName || "Untitled Event", organizer: data.organizer || "Unknown Organizer",
       eventType: data.eventType || "", region: data.region || "",
@@ -567,92 +690,96 @@ export default function SponsorshipTracker() {
     setSponsorships(prev => [newSp, ...prev]);
     setNewRequestOpen(false);
     openDetail(id);
+    if (session) {
+      supabase.from("sponsorships").insert(spToDbRow(newSp, session.user.id))
+        .then(({ error }) => { if (error) setDataError("Couldn't save the new request: " + error.message); });
+    }
   }
 
-  function updateFields(spId, patch) { setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, ...patch } : s)); }
+  function updateFields(spId, patch) { applyAndPersist(spId, s => ({ ...s, ...patch })); }
   function updatePaymentSub(spId, subKey, patch) {
-    setSponsorships(prev => prev.map(s => s.id !== spId ? s : { ...s, payment: { ...s.payment, [subKey]: { ...s.payment[subKey], ...patch } } }));
+    applyAndPersist(spId, s => ({ ...s, payment: { ...s.payment, [subKey]: { ...s.payment[subKey], ...patch } } }));
   }
   function updatePaymentTop(spId, patch) {
-    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, payment: { ...s.payment, ...patch } } : s));
+    applyAndPersist(spId, s => ({ ...s, payment: { ...s.payment, ...patch } }));
   }
   function addConnectivity(spId, item) {
-    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, connectivity: [...(s.connectivity || []), { id: "c-" + Date.now(), technicalTeam: "", setupDate: null, setupStatus: "Not Started", needsReturn: HARDWARE_TYPES.includes(item.type), deviceReturnDate: null, deviceReturnStatus: null, ...item }] } : s));
+    applyAndPersist(spId, s => ({ ...s, connectivity: [...(s.connectivity || []), { id: "c-" + Date.now(), technicalTeam: "", setupDate: null, setupStatus: "Not Started", needsReturn: HARDWARE_TYPES.includes(item.type), deviceReturnDate: null, deviceReturnStatus: null, ...item }] }));
   }
   function updateConnectivityItem(spId, cid, patch) {
-    setSponsorships(prev => prev.map(s => s.id !== spId ? s : { ...s, connectivity: s.connectivity.map(c => c.id === cid ? { ...c, ...patch } : c) }));
+    applyAndPersist(spId, s => ({ ...s, connectivity: s.connectivity.map(c => c.id === cid ? { ...c, ...patch } : c) }));
   }
   function removeConnectivityItem(spId, cid) {
-    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, connectivity: s.connectivity.filter(c => c.id !== cid) } : s));
+    applyAndPersist(spId, s => ({ ...s, connectivity: s.connectivity.filter(c => c.id !== cid) }));
   }
   function addDeliverable(spId, dl) {
-    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, deliverables: [...s.deliverables, { id: "dl-" + Date.now(), status: "Pending", evidence: "", notes: "", ...dl }] } : s));
+    applyAndPersist(spId, s => ({ ...s, deliverables: [...s.deliverables, { id: "dl-" + Date.now(), status: "Pending", evidence: "", notes: "", ...dl }] }));
   }
   function removeDeliverable(spId, dlId) {
-    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, deliverables: s.deliverables.filter(dd => dd.id !== dlId) } : s));
+    applyAndPersist(spId, s => ({ ...s, deliverables: s.deliverables.filter(dd => dd.id !== dlId) }));
   }
   function editDeliverable(spId, dlId, patch) {
-    setSponsorships(prev => prev.map(s => s.id !== spId ? s : { ...s, deliverables: s.deliverables.map(dd => dd.id === dlId ? { ...dd, ...patch } : dd) }));
+    applyAndPersist(spId, s => ({ ...s, deliverables: s.deliverables.map(dd => dd.id === dlId ? { ...dd, ...patch } : dd) }));
   }
   function cycleDeliverable(spId, dlId) {
-    setSponsorships(prev => prev.map(s => {
-      if (s.id !== spId) return s;
-      return { ...s, deliverables: s.deliverables.map(dl => dl.id !== dlId ? dl : { ...dl, status: dl.status === "Pending" ? "In Progress" : dl.status === "In Progress" ? "Done" : "Pending" }) };
-    }));
+    applyAndPersist(spId, s => ({ ...s, deliverables: s.deliverables.map(dl => dl.id !== dlId ? dl : { ...dl, status: dl.status === "Pending" ? "In Progress" : dl.status === "In Progress" ? "Done" : "Pending" }) }));
   }
   function addTask(spId, text) {
-    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, tasks: [...s.tasks, { id: "t-" + Date.now(), text, done: false }] } : s));
+    applyAndPersist(spId, s => ({ ...s, tasks: [...s.tasks, { id: "t-" + Date.now(), text, done: false }] }));
   }
   function loadSuggestedTasks(spId, stage) {
-    setSponsorships(prev => prev.map(s => {
-      if (s.id !== spId) return s;
+    applyAndPersist(spId, s => {
       const existing = new Set(s.tasks.map(t => t.text));
       const toAdd = (SUGGESTED_TASKS[stage] || []).filter(t => !existing.has(t)).map(text => ({ id: "t-" + Date.now() + Math.random(), text, done: false }));
       return { ...s, tasks: [...s.tasks, ...toAdd] };
-    }));
+    });
   }
   function toggleTaskItem(spId, taskId) {
-    setSponsorships(prev => prev.map(s => s.id !== spId ? s : { ...s, tasks: s.tasks.map(t => t.id === taskId ? { ...t, done: !t.done } : t) }));
+    applyAndPersist(spId, s => ({ ...s, tasks: s.tasks.map(t => t.id === taskId ? { ...t, done: !t.done } : t) }));
   }
   function removeTask(spId, taskId) {
-    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, tasks: s.tasks.filter(t => t.id !== taskId) } : s));
+    applyAndPersist(spId, s => ({ ...s, tasks: s.tasks.filter(t => t.id !== taskId) }));
   }
   function advanceStage(spId, dir) {
-    setSponsorships(prev => prev.map(s => {
-      if (s.id !== spId) return s;
+    applyAndPersist(spId, s => {
       const idx = STAGES.indexOf(s.stage);
       if (idx === -1) return s;
       const nextIdx = idx + dir;
       if (nextIdx < 0 || nextIdx >= STAGES.length) return s;
       return { ...s, stage: STAGES[nextIdx], stageEnteredDate: TODAY };
-    }));
+    });
   }
   function setStageDirect(spId, stage) {
-    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, stage, stageEnteredDate: TODAY } : s));
+    applyAndPersist(spId, s => ({ ...s, stage, stageEnteredDate: TODAY }));
   }
   function setApproverStatus(spId, approver, status) {
-    setSponsorships(prev => prev.map(s => {
-      if (s.id !== spId) return s;
+    applyAndPersist(spId, s => {
       const approvals = s.approvals.map(a => a.approver === approver ? { ...a, status, date: status === "Pending" ? null : TODAY } : a);
       let stage = s.stage;
       if (status === "Rejected") stage = "Rejected";
-      else if (approvals.every(a => a.status === "Approved") && s.stage === "Memo Approval") stage = s.stage; // stays; user advances explicitly, or use the shortcut button
       return { ...s, approvals, stage, stageEnteredDate: stage !== s.stage ? TODAY : s.stageEnteredDate };
-    }));
+    });
   }
   function resetApprovals(spId) {
-    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, approvals: initApprovals() } : s));
+    applyAndPersist(spId, s => ({ ...s, approvals: initApprovals() }));
   }
   function deleteSponsorship(spId) {
     setSponsorships(prev => prev.filter(s => s.id !== spId));
     closeDetail();
+    if (session) {
+      supabase.from("sponsorships").delete().eq("id", spId)
+        .then(({ error }) => { if (error) setDataError("Couldn't delete: " + error.message); });
+    }
   }
 
   function exportToExcel() {
     const rows = sponsorships.map(s => {
       const h = computeHealth(s);
       const fu = generateFollowUps(s);
-      const doneCount = s.deliverables.filter(x => x.status === "Done").length;
+      const sponsorItems = s.deliverables.filter(x => (x.category || "Sponsor") === "Sponsor");
+      const partnerItems = s.deliverables.filter(x => x.category === "Partner");
+      const sponsorDone = sponsorItems.filter(x => x.status === "Done").length;
+      const partnerDone = partnerItems.filter(x => x.status === "Done").length;
       return {
         "Request ID": s.requestId,
         "Event Name": s.eventName,
@@ -674,7 +801,10 @@ export default function SponsorshipTracker() {
         "Payment Status": s.payment.payment.status,
         "Payment Due": fmtDate(s.payment.payment.dueDate),
         "Connectivity Items": (s.connectivity || []).map(c => c.type).join(", "),
-        "Deliverables Progress": s.deliverables.length ? `${doneCount}/${s.deliverables.length}` : "",
+        "Sponsor Deliverables Progress": sponsorItems.length ? `${sponsorDone}/${sponsorItems.length}` : "",
+        "Sponsor Deliverables (open)": sponsorItems.filter(x => x.status !== "Done").map(x => x.name).join(", "),
+        "Partner Deliverables Progress": partnerItems.length ? `${partnerDone}/${partnerItems.length}` : "",
+        "Partner Deliverables (open)": partnerItems.filter(x => x.status !== "Done").map(x => x.name).join(", "),
         "Open Follow-ups": fu.map(f => f.text).join(" | "),
       };
     });
@@ -713,9 +843,33 @@ export default function SponsorshipTracker() {
     { key: "calendar", label: "Calendar", icon: CalendarIcon, count: upcomingEvents.length },
   ];
 
+  if (authLoading) {
+    return (
+      <div className="sot" style={{ alignItems: "center", justifyContent: "center" }}>
+        <style>{STYLE}</style>
+        <div style={{ color: "var(--text-faint)", fontSize: 13 }}>Loading…</div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="sot" style={{ alignItems: "center", justifyContent: "center" }}>
+        <style>{STYLE}</style>
+        <LoginScreen />
+      </div>
+    );
+  }
+
   return (
     <div className="sot">
       <style>{STYLE}</style>
+      {dataError && (
+        <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 100, background: "var(--signal-crit-soft)", color: "var(--signal-crit)", padding: "8px 16px", borderRadius: 8, fontSize: 12, display: "flex", alignItems: "center", gap: 10 }}>
+          {dataError}
+          <button className="btn ghost" style={{ padding: "2px 8px", fontSize: 11 }} onClick={() => setDataError("")}>Dismiss</button>
+        </div>
+      )}
       <div className="sidebar">
         <div className="brand-row">
           <div className="brand-mark"><Signal size={14} color="#fff" /></div>
@@ -726,7 +880,13 @@ export default function SponsorshipTracker() {
             <n.icon size={15} />{n.label}{n.count ? <span className="nav-count">{n.count}</span> : null}
           </button>
         ))}
-        <div className="sidebar-foot">{sponsorships.length} active sponsorships tracked · Today, {fmtDate(TODAY)}</div>
+        <div className="sidebar-foot">
+          {sponsorships.length} active sponsorships tracked · Today, {fmtDate(TODAY)}
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.user.email}</span>
+            <button className="btn ghost" style={{ padding: "3px 7px", fontSize: 10.5, flexShrink: 0 }} onClick={() => supabase.auth.signOut()}><LogOut size={11} /> Log out</button>
+          </div>
+        </div>
       </div>
 
       <div className="main">
@@ -766,17 +926,23 @@ export default function SponsorshipTracker() {
         </div>
 
         <div className="content">
-          {view === "dashboard" && (
-            <DashboardView overdueCount={overdueCount} pendingApprovals={pendingApprovals} upcomingEvents={upcomingEvents}
-              pendingPayments={pendingPayments} connectivityPending={connectivityPending} deviceReturns={deviceReturns}
-              allFollowUps={allFollowUps} ackedFollowUps={ackedFollowUps} recentRequests={recentRequests} recentApprovals={recentApprovals}
-              sponsorsRequiringAction={sponsorsRequiringAction} openDetail={openDetail} sponsorships={sponsorships}
-              acknowledge={acknowledge} unacknowledge={unacknowledge} showAcked={showAcked} setShowAcked={setShowAcked}
-              feedExpanded={feedExpanded} setFeedExpanded={setFeedExpanded} />
+          {dataLoading ? (
+            <div className="panel-empty" style={{ padding: 60 }}>Loading your sponsorships…</div>
+          ) : (
+            <>
+              {view === "dashboard" && (
+                <DashboardView overdueCount={overdueCount} pendingApprovals={pendingApprovals} upcomingEvents={upcomingEvents}
+                  pendingPayments={pendingPayments} connectivityPending={connectivityPending} deviceReturns={deviceReturns}
+                  allFollowUps={allFollowUps} ackedFollowUps={ackedFollowUps} recentRequests={recentRequests} recentApprovals={recentApprovals}
+                  sponsorsRequiringAction={sponsorsRequiringAction} openDetail={openDetail} sponsorships={sponsorships}
+                  acknowledge={acknowledge} unacknowledge={unacknowledge} showAcked={showAcked} setShowAcked={setShowAcked}
+                  feedExpanded={feedExpanded} setFeedExpanded={setFeedExpanded} />
+              )}
+              {view === "pipeline" && <PipelineView sponsorships={filteredPipeline} stageFilter={stageFilter} setStageFilter={setStageFilter} openDetail={openDetail} />}
+              {view === "sponsors" && <SponsorshipProfilesView sponsorships={sponsorships} openDetail={openDetail} />}
+              {view === "calendar" && <CalendarView sponsorships={sponsorships} openDetail={openDetail} />}
+            </>
           )}
-          {view === "pipeline" && <PipelineView sponsorships={filteredPipeline} stageFilter={stageFilter} setStageFilter={setStageFilter} openDetail={openDetail} />}
-          {view === "sponsors" && <SponsorshipProfilesView sponsorships={sponsorships} openDetail={openDetail} />}
-          {view === "calendar" && <CalendarView sponsorships={sponsorships} openDetail={openDetail} />}
         </div>
       </div>
 
@@ -822,6 +988,47 @@ function Signal({ size = 14, color = "#fff" }) {
       <rect x="14" y="6" width="3" height="16" rx="1" fill={color} />
       <rect x="20" y="2" width="3" height="20" rx="1" fill={color} opacity="0.5" />
     </svg>
+  );
+}
+
+/* ============================== LOGIN ============================== */
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    const { error: err } = await supabase.auth.signInWithPassword({ email, password });
+    setBusy(false);
+    if (err) setError(err.message);
+  }
+
+  return (
+    <div className="panel" style={{ width: 340, padding: "28px 26px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 22 }}>
+        <div className="brand-mark"><Signal size={14} color="#fff" /></div>
+        <div>
+          <div className="brand-title disp">Sponsorship Ops</div>
+          <div className="brand-sub">Command Center</div>
+        </div>
+      </div>
+      <form onSubmit={handleSubmit}>
+        <div className="form-row">
+          <div className="kv-label">Email</div>
+          <input className="form-input" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required />
+        </div>
+        <div className="form-row">
+          <div className="kv-label">Password</div>
+          <input className="form-input" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required />
+        </div>
+        {error && <div style={{ fontSize: 12, color: "var(--signal-crit)", marginBottom: 12 }}>{error}</div>}
+        <button className="btn primary" type="submit" disabled={busy} style={{ width: "100%", justifyContent: "center" }}>{busy ? "Signing in…" : "Sign in"}</button>
+      </form>
+    </div>
   );
 }
 
@@ -965,7 +1172,46 @@ function DashboardView(props) {
           </div>
         </div>
       </div>
+
+      <DeliverablesDuePanel sponsorships={sponsorships} openDetail={openDetail} />
     </>
+  );
+}
+
+function DeliverablesDuePanel({ sponsorships, openDetail }) {
+  const active = sponsorships.filter(s => !["Archived", "Rejected"].includes(s.stage));
+  const buckets = { Sponsor: [], Partner: [] };
+  active.forEach(s => {
+    (s.deliverables || []).forEach(dl => {
+      if (dl.status === "Done") return;
+      const cat = dl.category || "Sponsor";
+      buckets[cat].push({ ...dl, spId: s.id, eventName: s.eventName, overdue: daysBetween(TODAY, dl.dueDate) > 0 });
+    });
+  });
+  Object.keys(buckets).forEach(k => buckets[k].sort((a, b) => a.dueDate - b.dueDate));
+
+  return (
+    <div className="grid two-col" style={{ marginBottom: 0 }}>
+      {["Sponsor", "Partner"].map(cat => (
+        <div className="panel" key={cat}>
+          <div className="panel-head"><div className="panel-title"><ListChecks size={13} /> {cat} Deliverables Due</div>
+            <div className="panel-title-count">{buckets[cat].length} pending</div></div>
+          <div className="panel-body">
+            {buckets[cat].length === 0 && <div className="panel-empty">Nothing pending.</div>}
+            {buckets[cat].slice(0, 8).map(dl => (
+              <div className="row" key={dl.id} onClick={() => openDetail(dl.spId, "deliverables")}>
+                <div style={{ flex: 1 }}>
+                  <div className="row-title">{dl.name}</div>
+                  <div className="row-sub">{dl.eventName} · Due {fmtDate(dl.dueDate)}</div>
+                </div>
+                <span className={`badge ${dl.overdue ? "crit" : "warn"}`}>{dl.overdue ? "Overdue" : dl.status}</span>
+              </div>
+            ))}
+            {buckets[cat].length > 8 && <div className="row-sub" style={{ padding: "6px 10px" }}>+{buckets[cat].length - 8} more</div>}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1076,9 +1322,8 @@ function SponsorshipProfilesView({ sponsorships, openDetail }) {
   return (
     <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
       {sponsorships.map(s => {
-        const done = s.deliverables.filter(dl => dl.status === "Done").length;
-        const total = s.deliverables.length;
-        const pct = total ? Math.round((done / total) * 100) : 0;
+        const sponsorItems = s.deliverables.filter(dl => (dl.category || "Sponsor") === "Sponsor");
+        const partnerItems = s.deliverables.filter(dl => dl.category === "Partner");
         const followUps = generateFollowUps(s);
         const h = computeHealth(s);
         const daysToEvent = daysBetween(s.eventDate, TODAY);
@@ -1103,15 +1348,20 @@ function SponsorshipProfilesView({ sponsorships, openDetail }) {
               <div className="org-stat"><div className="num mono">{s.valueType === "In-Kind" ? "In-Kind" : fmtMVR(s.sponsorAmount)}</div><div className="lbl">Value</div></div>
               <div className="org-stat"><div className="num">{daysToEvent >= 0 ? `${daysToEvent}d` : "Past"}</div><div className="lbl">{daysToEvent >= 0 ? "To Event" : "Event Date"}</div></div>
             </div>
-            {total > 0 && (
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>Deliverables</span><span>{done}/{total}</span></div>
-                <div style={{ height: 6, background: "var(--panel-2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: pct === 100 ? "var(--signal-ok)" : "var(--brand)" }} /></div>
-              </div>
-            )}
+            {[{ label: "Sponsor Deliverables", items: sponsorItems }, { label: "Partner Deliverables", items: partnerItems }].map(({ label, items }) => {
+              if (items.length === 0) return null;
+              const doneN = items.filter(dl => dl.status === "Done").length;
+              const pct = Math.round((doneN / items.length) * 100);
+              return (
+                <div key={label} style={{ marginBottom: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>{label}</span><span>{doneN}/{items.length}</span></div>
+                  <div style={{ height: 6, background: "var(--panel-2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: pct === 100 ? "var(--signal-ok)" : "var(--brand)" }} /></div>
+                </div>
+              );
+            })}
             {followUps.length > 0 ? (
-              <div className="row-sub" style={{ lineHeight: 1.5 }}>{followUps[0].text} <span style={{ color: "var(--text-faint)" }}>(owner: {followUps[0].owner})</span>{followUps.length > 1 ? ` +${followUps.length - 1} more` : ""}</div>
-            ) : <div className="row-sub">No open follow-ups.</div>}
+              <div className="row-sub" style={{ lineHeight: 1.5, marginTop: 4 }}>{followUps[0].text} <span style={{ color: "var(--text-faint)" }}>(owner: {followUps[0].owner})</span>{followUps.length > 1 ? ` +${followUps.length - 1} more` : ""}</div>
+            ) : <div className="row-sub" style={{ marginTop: 4 }}>No open follow-ups.</div>}
           </div>
         );
       })}
@@ -1363,13 +1613,80 @@ function SettingsPanel({ thresholds, setThresholds, close, saveError }) {
 }
 
 /* ============================== DETAIL PANEL ============================== */
+/* ============================== DELIVERABLES TAB (Sponsor vs Partner) ============================== */
+function DeliverableSection({ title, hint, items, category, editMode, cycleDeliverable, editDeliverable, removeDeliverable, addDeliverable, spId }) {
+  const [newDl, setNewDl] = useState({ name: "", owner: "", dueDate: "" });
+  const done = items.filter(dl => dl.status === "Done").length;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 4px 0" }}>
+        <span>{title}</span>
+        {items.length > 0 && <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>{done}/{items.length}</span>}
+      </div>
+      <div style={{ fontSize: 11, color: "var(--text-faint)", marginBottom: 8 }}>{hint}</div>
+      {items.length === 0 && <div className="panel-empty">Nothing added yet.</div>}
+      {items.map(dl => {
+        const overdue = dl.status !== "Done" && daysBetween(TODAY, dl.dueDate) > 0;
+        return (
+          <div className="check-row" key={dl.id} style={overdue ? { background: "var(--signal-crit-soft)", borderRadius: 8 } : undefined}>
+            <div className={`check-box ${dl.status === "Done" ? "done" : dl.status === "In Progress" ? "progress" : ""}`} onClick={() => cycleDeliverable(spId, dl.id)}>
+              {dl.status === "Done" && <CheckCircle2 size={11} color="#0d1a14" />}
+              {dl.status === "In Progress" && <Circle size={7} color="var(--signal-warn)" fill="var(--signal-warn)" />}
+            </div>
+            <div style={{ flex: 1 }}>
+              {editMode ? (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+                  <input className="form-input" style={{ width: 160 }} value={dl.name} onChange={e => editDeliverable(spId, dl.id, { name: e.target.value })} />
+                  <input className="form-input" style={{ width: 100 }} value={dl.owner} onChange={e => editDeliverable(spId, dl.id, { owner: e.target.value })} placeholder="Owner" />
+                  <input type="date" className="form-input" style={{ width: 140 }} value={dstr(dl.dueDate)} onChange={e => editDeliverable(spId, dl.id, { dueDate: parseDateInput(e.target.value) || dl.dueDate })} />
+                </div>
+              ) : (
+                <>
+                  <div className={`check-label ${dl.status === "Done" ? "done" : ""}`}>{dl.name}</div>
+                  <div className="check-meta">Owner: {dl.owner} · Due {fmtDate(dl.dueDate)} {dl.evidence && `· Evidence: ${dl.evidence}`}{dl.notes && ` · ${dl.notes}`}</div>
+                </>
+              )}
+            </div>
+            <span className={`badge ${overdue ? "crit" : dl.status === "Done" ? "ok" : dl.status === "In Progress" ? "warn" : "neutral"}`}>{overdue ? "Overdue" : dl.status}</span>
+            <X size={14} className="del-x" onClick={() => removeDeliverable(spId, dl.id)} title="Remove" />
+          </div>
+        );
+      })}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+        <input className="form-input" style={{ width: 150 }} placeholder={`New ${category.toLowerCase()} deliverable`} value={newDl.name} onChange={e => setNewDl({ ...newDl, name: e.target.value })} />
+        <input className="form-input" style={{ width: 100 }} placeholder="Owner" value={newDl.owner} onChange={e => setNewDl({ ...newDl, owner: e.target.value })} />
+        <input type="date" className="form-input" style={{ width: 140 }} value={newDl.dueDate} onChange={e => setNewDl({ ...newDl, dueDate: e.target.value })} />
+        <button className="btn" disabled={!newDl.name.trim()} onClick={() => {
+          if (!newDl.name.trim()) return;
+          addDeliverable(spId, { name: newDl.name, category, owner: newDl.owner || (category === "Sponsor" ? "You" : "Organizer"), dueDate: parseDateInput(newDl.dueDate) || TODAY });
+          setNewDl({ name: "", owner: "", dueDate: "" });
+        }}>+ Add</button>
+      </div>
+    </div>
+  );
+}
+
+function DeliverablesTab({ sp, editMode, cycleDeliverable, editDeliverable, removeDeliverable, addDeliverable }) {
+  const sponsorItems = sp.deliverables.filter(dl => (dl.category || "Sponsor") === "Sponsor");
+  const partnerItems = sp.deliverables.filter(dl => dl.category === "Partner");
+  return (
+    <>
+      <DeliverableSection title="Sponsor Deliverables" hint="What we agree to provide — connectivity, cash, tents, event setup, backdrop printing, giveaways, merch, marketing support."
+        items={sponsorItems} category="Sponsor" editMode={editMode} cycleDeliverable={cycleDeliverable}
+        editDeliverable={editDeliverable} removeDeliverable={removeDeliverable} addDeliverable={addDeliverable} spId={sp.id} />
+      <DeliverableSection title="Partner Deliverables" hint="What the organizer provides in return — sponsorship tier status, logo & branding, social media, complimentary slots, stall space, PR opportunities."
+        items={partnerItems} category="Partner" editMode={editMode} cycleDeliverable={cycleDeliverable}
+        editDeliverable={editDeliverable} removeDeliverable={removeDeliverable} addDeliverable={addDeliverable} spId={sp.id} />
+    </>
+  );
+}
+
 function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, editMode, setEditMode,
   updateFields, updatePaymentSub, updatePaymentTop, addConnectivity, updateConnectivityItem, removeConnectivityItem,
   addDeliverable, removeDeliverable, editDeliverable, setStageDirect, setApproverStatus, resetApprovals,
   addTask, loadSuggestedTasks, toggleTaskItem, removeTask, deleteSponsorship }) {
   const followUps = generateFollowUps(sp);
   const stageIdx = STAGES.indexOf(sp.stage);
-  const [newDl, setNewDl] = useState({ name: "", owner: "", dueDate: "" });
   const [newTask, setNewTask] = useState("");
   const [newConn, setNewConn] = useState({ type: CONNECTIVITY_TYPES[0] });
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1551,48 +1868,8 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
         )}
 
         {tab === "deliverables" && (
-          <>
-            <div className="section-label">Deliverable Checklist</div>
-            {sp.deliverables.length === 0 && <div className="panel-empty">No deliverables defined yet.</div>}
-            {sp.deliverables.map(dl => {
-              // Overdue = due date has already passed (fixed — was inverted before)
-              const overdue = dl.status !== "Done" && daysBetween(TODAY, dl.dueDate) > 0;
-              return (
-                <div className="check-row" key={dl.id} style={overdue ? { background: "var(--signal-crit-soft)", borderRadius: 8 } : undefined}>
-                  <div className={`check-box ${dl.status === "Done" ? "done" : dl.status === "In Progress" ? "progress" : ""}`} onClick={() => cycleDeliverable(sp.id, dl.id)}>
-                    {dl.status === "Done" && <CheckCircle2 size={11} color="#0d1a14" />}
-                    {dl.status === "In Progress" && <Circle size={7} color="var(--signal-warn)" fill="var(--signal-warn)" />}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    {editMode ? (
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
-                        <input className="form-input" style={{ width: 160 }} value={dl.name} onChange={e => editDeliverable(sp.id, dl.id, { name: e.target.value })} />
-                        <input className="form-input" style={{ width: 100 }} value={dl.owner} onChange={e => editDeliverable(sp.id, dl.id, { owner: e.target.value })} placeholder="Owner" />
-                        <input type="date" className="form-input" style={{ width: 140 }} value={dstr(dl.dueDate)} onChange={e => editDeliverable(sp.id, dl.id, { dueDate: parseDateInput(e.target.value) || dl.dueDate })} />
-                      </div>
-                    ) : (
-                      <>
-                        <div className={`check-label ${dl.status === "Done" ? "done" : ""}`}>{dl.name}</div>
-                        <div className="check-meta">Owner: {dl.owner} · Due {fmtDate(dl.dueDate)} {dl.evidence && `· Evidence: ${dl.evidence}`}{dl.notes && ` · ${dl.notes}`}</div>
-                      </>
-                    )}
-                  </div>
-                  <span className={`badge ${overdue ? "crit" : dl.status === "Done" ? "ok" : dl.status === "In Progress" ? "warn" : "neutral"}`}>{overdue ? "Overdue" : dl.status}</span>
-                  <X size={14} className="del-x" onClick={() => removeDeliverable(sp.id, dl.id)} title="Remove deliverable" />
-                </div>
-              );
-            })}
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
-              <input className="form-input" style={{ width: 160 }} placeholder="New deliverable name" value={newDl.name} onChange={e => setNewDl({ ...newDl, name: e.target.value })} />
-              <input className="form-input" style={{ width: 100 }} placeholder="Owner" value={newDl.owner} onChange={e => setNewDl({ ...newDl, owner: e.target.value })} />
-              <input type="date" className="form-input" style={{ width: 140 }} value={newDl.dueDate} onChange={e => setNewDl({ ...newDl, dueDate: e.target.value })} />
-              <button className="btn" disabled={!newDl.name.trim()} onClick={() => {
-                if (!newDl.name.trim()) return;
-                addDeliverable(sp.id, { name: newDl.name, owner: newDl.owner || "Unassigned", dueDate: parseDateInput(newDl.dueDate) || TODAY });
-                setNewDl({ name: "", owner: "", dueDate: "" });
-              }}>+ Add</button>
-            </div>
-          </>
+          <DeliverablesTab sp={sp} editMode={editMode} cycleDeliverable={cycleDeliverable}
+            editDeliverable={editDeliverable} removeDeliverable={removeDeliverable} addDeliverable={addDeliverable} />
         )}
 
         {tab === "payment" && sp.payment && (
