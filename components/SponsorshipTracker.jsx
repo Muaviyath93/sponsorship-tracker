@@ -2,6 +2,9 @@
 
 import { useState, useMemo, useEffect } from "react";
 import * as XLSX from "xlsx";
+import { supabase } from "@/lib/supabaseClient";
+import { fetchSponsorships, upsertSponsorships, deleteSponsorshipRow, bootstrapIfEmpty, fetchSettings, saveSettings } from "@/lib/dataSync";
+import LoginScreen from "@/components/LoginScreen";
 import {
   LayoutDashboard, ListChecks, Users, Calendar as CalendarIcon, Search, Bell,
   Wifi, CreditCard, Clock, AlertTriangle, CheckCircle2, ChevronRight, ChevronDown, ChevronLeft, X,
@@ -565,7 +568,8 @@ function levelBadge(level) {
 
 /* ============================== MAIN APP ============================== */
 export default function SponsorshipTracker() {
-  const [sponsorships, setSponsorships] = useState(SEED_SPONSORSHIPS);
+  const [session, setSession] = useState(undefined); // undefined = not checked yet, null = signed out, object = signed in
+  const [sponsorships, setSponsorships] = useState([]);
   const [view, setView] = useState("dashboard");
   const [selectedId, setSelectedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -580,21 +584,44 @@ export default function SponsorshipTracker() {
   const [newRequestOpen, setNewRequestOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState(false);
+  const [dataError, setDataError] = useState("");
+  const [retryCount, setRetryCount] = useState(0);
 
+  // Auth: watch the Supabase session. Everything else waits for this to resolve.
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // Once signed in, load sponsorships + shared settings from Supabase (bootstrapping demo
+  // data on a brand-new/empty project so the app isn't blank on first run).
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const isEmpty = await bootstrapIfEmpty(SEED_SPONSORSHIPS);
+        const rows = isEmpty ? SEED_SPONSORSHIPS : await fetchSponsorships();
+        const settings = await fetchSettings();
+        if (cancelled) return;
+        setSponsorships(rows);
+        if (settings.thresholds) setThresholds({ ...DEFAULT_THRESHOLDS, ...settings.thresholds });
+        setAnnualBudget(settings.annualBudget);
+        setLoaded(true);
+      } catch (e) {
+        if (!cancelled) setDataError(e.message || "Failed to load data from Supabase.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [session, retryCount]);
+
+  // Personal UI preference (which follow-ups you've dismissed) — kept per-browser, not synced.
   useEffect(() => {
     try {
       const a = localStorage.getItem("sot:acknowledged");
       if (a) setDismissed(JSON.parse(a));
     } catch (e) { /* no saved acknowledgements yet */ }
-    try {
-      const t = localStorage.getItem("sot:thresholds");
-      if (t) setThresholds({ ...DEFAULT_THRESHOLDS, ...JSON.parse(t) });
-    } catch (e) { /* no saved thresholds yet */ }
-    try {
-      const b = localStorage.getItem("sot:annualBudget");
-      if (b) setAnnualBudget(Number(JSON.parse(b)) || 2500000);
-    } catch (e) { /* no saved budget yet */ }
-    setLoaded(true);
   }, []);
 
   THRESHOLDS = thresholds;
@@ -607,13 +634,17 @@ export default function SponsorshipTracker() {
 
   useEffect(() => {
     if (!loaded) return;
-    try { localStorage.setItem("sot:thresholds", JSON.stringify(thresholds)); } catch (e) { /* best effort */ }
-  }, [thresholds, loaded]);
+    const t = setTimeout(() => { saveSettings({ thresholds, annualBudget }).catch(() => setSaveError(true)); }, 600);
+    return () => clearTimeout(t);
+  }, [thresholds, annualBudget, loaded]);
 
+  // Any change to sponsorships (edits, new deliverables, stage moves, etc.) gets batch-upserted
+  // back to Supabase, debounced so rapid inline-edit keystrokes don't fire a request per key.
   useEffect(() => {
     if (!loaded) return;
-    try { localStorage.setItem("sot:annualBudget", JSON.stringify(annualBudget)); } catch (e) { /* best effort */ }
-  }, [annualBudget, loaded]);
+    const t = setTimeout(() => { upsertSponsorships(sponsorships).catch(() => setSaveError(true)); }, 600);
+    return () => clearTimeout(t);
+  }, [sponsorships, loaded]);
 
   const allFollowUpsRaw = useMemo(() => {
     const arr = sponsorships.flatMap(generateFollowUps);
@@ -724,6 +755,7 @@ export default function SponsorshipTracker() {
   }
   function deleteSponsorship(spId) {
     setSponsorships(prev => prev.filter(s => s.id !== spId));
+    deleteSponsorshipRow(spId).catch(() => setSaveError(true));
     closeDetail();
   }
 
@@ -796,6 +828,29 @@ export default function SponsorshipTracker() {
     { key: "pipeline", label: "Sponsorship Pipeline", icon: ListChecks, count: sponsorships.length },
   ];
 
+  if (session === undefined) {
+    return (
+      <div className="sot" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <style>{STYLE}</style>
+        <div style={{ color: "var(--text-faint)", fontSize: 13 }}>Loading…</div>
+      </div>
+    );
+  }
+  if (!session) return <LoginScreen />;
+  if (!loaded) {
+    return (
+      <div className="sot" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <style>{STYLE}</style>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ color: "var(--text-faint)", fontSize: 13, marginBottom: dataError ? 12 : 0 }}>
+            {dataError ? `Couldn't load data: ${dataError}` : "Loading your workspace…"}
+          </div>
+          {dataError && <button className="btn" onClick={() => { setDataError(""); setRetryCount(n => n + 1); }}>Retry</button>}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="sot">
       <style>{STYLE}</style>
@@ -809,7 +864,14 @@ export default function SponsorshipTracker() {
             <n.icon size={15} />{n.label}{n.count ? <span className="nav-count">{n.count}</span> : null}
           </button>
         ))}
-        <div className="sidebar-foot">{sponsorships.length} active sponsorships tracked · Today, {fmtDate(TODAY)}</div>
+        <div className="sidebar-foot">
+          {sponsorships.length} active sponsorships tracked · Today, {fmtDate(TODAY)}
+          {saveError && <div style={{ color: "var(--signal-crit)", marginTop: 4 }}>⚠ Some changes may not have saved — check your connection.</div>}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line-soft)" }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={session.user.email}>{session.user.email}</span>
+            <button className="btn ghost" style={{ padding: "3px 8px", fontSize: 10.5 }} onClick={() => supabase.auth.signOut()}>Sign out</button>
+          </div>
+        </div>
       </div>
 
       <div className="main">
