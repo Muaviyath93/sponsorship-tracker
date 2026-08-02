@@ -2,11 +2,10 @@
 
 import { useState, useMemo, useEffect } from "react";
 import * as XLSX from "xlsx";
-import { supabase } from "../lib/supabaseClient";
 import {
   LayoutDashboard, ListChecks, Users, Calendar as CalendarIcon, Search, Bell,
   Wifi, CreditCard, Clock, AlertTriangle, CheckCircle2, ChevronRight, ChevronDown, ChevronLeft, X,
-  ArrowLeft, Building2, FileText, TrendingUp, Circle, MapPin, Settings as SettingsIcon, Download, LogOut
+  ArrowLeft, Building2, FileText, TrendingUp, Circle, MapPin, Settings as SettingsIcon, Download, Pencil
 } from "lucide-react";
 
 /* ============================== DESIGN TOKENS ============================== */
@@ -71,6 +70,10 @@ const STYLE = `
   .sot .two-col { grid-template-columns: 1.3fr 1fr; margin-bottom: 16px; }
   .sot .stat-card { background: var(--panel); border: 1px solid var(--line-soft); border-radius: 12px; padding: 14px 16px; }
   .sot .stat-card.hot { border-color: rgba(229,72,77,0.35); background: linear-gradient(180deg, var(--signal-crit-soft), var(--panel)); }
+  .sot .stat-card.compact { padding: 9px 12px; display: flex; align-items: center; gap: 9px; }
+  .sot .stat-card.compact .stat-icon { width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0; }
+  .sot .stat-card.compact .stat-num { font-size: 16px; line-height: 1.15; }
+  .sot .stat-card.compact .stat-label { font-size: 9.5px; text-transform: none; font-weight: 500; margin: 0; }
   .sot .stat-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .sot .stat-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
   .sot .stat-num { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
@@ -105,6 +108,14 @@ const STYLE = `
   .sot .badge.crit { background: var(--signal-crit-soft); color: var(--signal-crit); }
   .sot .badge.ok { background: var(--signal-ok-soft); color: var(--signal-ok); }
   .sot .badge.neutral { background: var(--signal-neutral-soft); color: var(--signal-neutral); }
+  .sot .badge.brand { background: var(--brand-soft); color: #ff8095; }
+  .sot .cc-group-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint); margin: 22px 0 10px 2px; }
+  .sot .cc-group-label:first-child { margin-top: 0; }
+  .sot .inline-edit { cursor: pointer; border-radius: 6px; padding: 3px 6px; margin: -3px -6px; transition: background .12s; display: inline-block; }
+  .sot .inline-edit:hover { background: var(--panel-2); }
+  .sot .inline-edit .inline-pencil { opacity: 0; margin-left: 6px; transition: opacity .12s; vertical-align: middle; }
+  .sot .inline-edit:hover .inline-pencil { opacity: 0.5; }
+  .sot .inline-edit-empty { color: var(--text-faint); font-style: italic; font-weight: 400; }
   .sot .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 
   .sot .row { display: flex; align-items: center; gap: 12px; padding: 11px 10px; border-radius: 9px; cursor: pointer; }
@@ -221,68 +232,6 @@ function dstr(dt) {
   return `${y}-${m}-${day}`;
 }
 function parseDateInput(v) { return v ? new Date(v + "T00:00:00") : null; }
-
-// ---- Supabase row <-> app-object conversion ----
-// Supabase stores dates as plain strings inside jsonb; the app works with real
-// Date objects everywhere else (deliverables, approvals, payment, connectivity all
-// nest dates). These two functions are the single place that translation happens.
-function dlToDb(dl) { return { ...dl, dueDate: dstr(dl.dueDate) }; }
-function dlFromDb(dl) { return { ...dl, dueDate: parseDateInput(dl.dueDate) }; }
-function apprToDb(a) { return { ...a, date: dstr(a.date) }; }
-function apprFromDb(a) { return { ...a, date: parseDateInput(a.date) }; }
-function connToDb(c) { return { ...c, setupDate: dstr(c.setupDate), deviceReturnDate: dstr(c.deviceReturnDate) }; }
-function connFromDb(c) { return { ...c, setupDate: parseDateInput(c.setupDate), deviceReturnDate: parseDateInput(c.deviceReturnDate) }; }
-function paymentToDb(p) {
-  return {
-    invoiceStatus: p.invoiceStatus,
-    pr: { ...p.pr, dueDate: dstr(p.pr.dueDate) },
-    po: { ...p.po, dueDate: dstr(p.po.dueDate) },
-    payment: { ...p.payment, dueDate: dstr(p.payment.dueDate) },
-    financeFollowUpDate: dstr(p.financeFollowUpDate),
-  };
-}
-function paymentFromDb(p) {
-  if (!p || !p.pr) return seedPayment();
-  return {
-    invoiceStatus: p.invoiceStatus,
-    pr: { ...p.pr, dueDate: parseDateInput(p.pr.dueDate) },
-    po: { ...p.po, dueDate: parseDateInput(p.po.dueDate) },
-    payment: { ...p.payment, dueDate: parseDateInput(p.payment.dueDate) },
-    financeFollowUpDate: parseDateInput(p.financeFollowUpDate),
-  };
-}
-function spToDbRow(sp, userId) {
-  return {
-    id: sp.id, user_id: userId, request_id: sp.requestId, event_name: sp.eventName, organizer: sp.organizer,
-    event_type: sp.eventType, region: sp.region, value_type: sp.valueType, sponsor_amount: sp.sponsorAmount,
-    in_kind_details: sp.inKindDetails, sponsorship_type: sp.sponsorshipType, stage: sp.stage,
-    stage_entered_date: dstr(sp.stageEnteredDate), received_date: dstr(sp.receivedDate), event_date: dstr(sp.eventDate),
-    memo_number: sp.memoNumber, budget_code: sp.budgetCode, background: sp.background, benefits: sp.benefits,
-    justification: sp.justification, duration: sp.duration, notes: sp.notes,
-    approvals: (sp.approvals || []).map(apprToDb),
-    deliverables: (sp.deliverables || []).map(dlToDb),
-    payment: paymentToDb(sp.payment),
-    connectivity: (sp.connectivity || []).map(connToDb),
-    tasks: sp.tasks || [],
-  };
-}
-function spFromDbRow(row) {
-  return {
-    id: row.id, requestId: row.request_id, eventName: row.event_name, organizer: row.organizer,
-    eventType: row.event_type || "", region: row.region || "", valueType: row.value_type || "Cash",
-    sponsorAmount: row.sponsor_amount || 0, inKindDetails: row.in_kind_details || "", sponsorshipType: row.sponsorship_type || "",
-    stage: row.stage, stageEnteredDate: parseDateInput(row.stage_entered_date) || TODAY,
-    receivedDate: parseDateInput(row.received_date) || TODAY, eventDate: parseDateInput(row.event_date) || TODAY,
-    memoNumber: row.memo_number || "", budgetCode: row.budget_code || "", background: row.background || "",
-    benefits: row.benefits || "", justification: row.justification || "", duration: row.duration || "", notes: row.notes || "",
-    approvals: (row.approvals || []).map(apprFromDb),
-    deliverables: (row.deliverables || []).map(dlFromDb),
-    payment: paymentFromDb(row.payment),
-    connectivity: (row.connectivity || []).map(connFromDb),
-    tasks: row.tasks || [],
-  };
-}
-
 function fmtDate(dt) {
   if (!dt) return "—";
   return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
@@ -292,11 +241,48 @@ function fmtMVR(n) {
   return "MVR " + n.toLocaleString("en-US");
 }
 
+// Data-entry speed helpers: reuse values already on file instead of retyping/retypo-ing them every time.
+function distinctValues(sponsorships, key) {
+  const set = new Set();
+  sponsorships.forEach(s => { if (s[key] && String(s[key]).trim()) set.add(String(s[key]).trim()); });
+  return Array.from(set).sort();
+}
+function lastSponsorshipFor(sponsorships, organizer) {
+  const matches = sponsorships.filter(s => s.organizer.trim().toLowerCase() === organizer.trim().toLowerCase());
+  if (matches.length === 0) return null;
+  return matches.sort((a, b) => b.receivedDate - a.receivedDate)[0];
+}
+// Some events run a single day; some run for days/weeks; some sponsorships (annual partnerships etc.)
+// span a year or more. These helpers format a start/end pair into one readable range either way.
+function sameDay(a, b) { return a && b && a.toDateString() === b.toDateString(); }
+function fmtDateRange(start, end) {
+  if (!start) return "—";
+  if (!end || sameDay(start, end)) return fmtDate(start);
+  const sameYear = start.getFullYear() === end.getFullYear();
+  const sameMonth = sameYear && start.getMonth() === end.getMonth();
+  if (sameMonth) {
+    return `${String(start.getDate()).padStart(2, "0")}–${end.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}`;
+  }
+  if (sameYear) {
+    return `${start.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} – ${end.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}`;
+  }
+  return `${fmtDate(start)} – ${fmtDate(end)}`;
+}
+function spanLabel(start, end) {
+  if (!start || !end || sameDay(start, end)) return null;
+  const days = Math.round((end - start) / 86400000) + 1;
+  if (days < 14) return `${days} days`;
+  if (days < 60) return `${Math.round(days / 7)} weeks`;
+  if (days < 330) return `${Math.round(days / 30)} months`;
+  const years = Math.round(days / 365 * 10) / 10;
+  return `${years} year${years === 1 ? "" : "s"}`;
+}
+
 /* ============================== WORKFLOW CONSTANTS ============================== */
-const STAGES = [
-  "New Request", "Information Required", "Under Review", "Memo Preparation",
-  "Memo Approval", "Approved", "Execution", "Completed"
-];
+// Simplified pipeline: intake → review → approval → execution → done.
+// "Information Required" and "Memo Preparation" were folded into "Under Review" and "Memo Approval" respectively.
+// "Approved" is no longer a stage you sit in — once every approver signs off, the request auto-advances to Execution.
+const STAGES = ["New Request", "Under Review", "Memo Approval", "Execution", "Completed"];
 const TERMINAL_ONLY = ["Rejected", "Archived"];
 
 const APPROVAL_CHAIN = [
@@ -309,22 +295,28 @@ function currentApprover(sp) { return (sp.approvals || []).find(a => a.status ==
 const CONNECTIVITY_TYPES = ["ILL Connection", "5G AirFibre", "SIM with Data Package", "SuperNet Connection", "MiFi Device", "Existing SIM Package Upgrade"];
 const HARDWARE_TYPES = ["5G AirFibre", "MiFi Device"]; // types that typically need a device return
 
-// Sponsor Deliverables = what we agree to provide the partner (connectivity, cash,
-// tents, event support, backdrop printing, giveaways, merch, marketing support).
-// Partner Deliverables = what the partner agrees to provide us in return
-// (sponsorship tier status, logo/branding, social media, complimentary slots, stall
-// space, PR opportunities). Kept as a tag on each deliverable rather than two
-// separate lists so status-cycling, due dates, and follow-ups all work identically.
-const DELIVERABLE_CATEGORIES = ["Sponsor", "Partner"];
+// What WE commit to provide to the partner/organizer
+const SPONSOR_DELIVERABLE_PRESETS = [
+  "Connectivity", "Cash Contribution", "Tents", "Event Setup Support",
+  "Backdrop Printing", "Giveaway Gifts", "Merchandise", "Marketing Support",
+];
+// What the PARTNER/organizer commits to provide back to us
+const PARTNER_DELIVERABLE_PRESETS = [
+  "Sponsorship Tier Status", "Logo & Branding at Event", "Branding on Social Media",
+  "Complimentary Participation Slots", "Free Stall Space", "Public Relations Opportunity",
+];
+const DELIVERABLE_KIND = {
+  sponsor: { field: "sponsorDeliverables", label: "Sponsor Deliverables", short: "Our Deliverables", presets: SPONSOR_DELIVERABLE_PRESETS },
+  partner: { field: "partnerDeliverables", label: "Partner Deliverables", short: "Partner Deliverables", presets: PARTNER_DELIVERABLE_PRESETS },
+};
+// Suggested internal departments responsible for a sponsor deliverable (owner is always "Ooredoo" — this is just for internal routing)
+const DEPARTMENT_SUGGESTIONS = ["Events Team", "Marketing", "Network Ops / IT", "CSR Team", "Finance", "Social Media Team"];
 
 const SUGGESTED_TASKS = {
   "New Request": ["Read proposal", "Validate mandatory information", "Log request and assign Request ID"],
-  "Information Required": ["Request missing information from organizer", "Set follow-up reminder"],
-  "Under Review": ["Evaluate strategic alignment", "Evaluate audience size & location", "Check budget reasonability", "Negotiate terms if required"],
-  "Memo Preparation": ["Draft sponsorship memo", "Confirm budget code with Finance", "Route memo into approval flow"],
+  "Under Review": ["Request missing information from organizer (if any)", "Evaluate strategic alignment", "Evaluate audience size & location", "Check budget reasonability", "Negotiate terms if required", "Draft sponsorship memo", "Confirm budget code with Finance", "Route memo into approval flow"],
   "Memo Approval": ["Follow up with the currently pending approver", "Confirm all approver sign-offs are logged"],
-  "Approved": ["Notify organizer of approval", "Arrange sponsorship agreement signing", "Schedule partner photo"],
-  "Execution": ["Send official confirmation & offer to organizer", "Raise PR request", "Raise PO request", "Follow up with Finance on payment", "Send connectivity/device request if required"],
+  "Execution": ["Notify organizer of approval", "Arrange sponsorship agreement signing", "Schedule partner photo", "Send official confirmation & offer to organizer", "Raise PR request", "Raise PO request", "Follow up with Finance on payment", "Send connectivity/device request if required"],
   "Completed": ["Collect event photos", "Confirm deliverables evidence received", "Archive coverage"],
 };
 
@@ -351,19 +343,25 @@ const SEED_SPONSORSHIPS = [
   {
     id: "sp-14", requestId: "SP-2026-014", eventName: "Football Foari Kids Fest 2026", organizer: "Maldives Youth Football Association",
     eventType: "Community / Sports", region: "Malé — Central Park", valueType: "Cash", sponsorAmount: 185000, inKindDetails: "",
-    sponsorshipType: "Cash + Connectivity", stage: "Execution", stageEnteredDate: d("2026-07-10"), receivedDate: d("2026-06-02"), eventDate: d("2026-08-15"),
+    sponsorshipType: "Cash + Connectivity", stage: "Execution", stageEnteredDate: d("2026-07-10"), receivedDate: d("2026-06-02"), eventDate: d("2026-08-15"), eventEndDate: null,
     memoNumber: "MEMO-2026-041", budgetCode: "MKT-CSR-0426",
     background: "Children's football festival aimed at grassroots participation across Malé schools.",
     benefits: "Logo on all branding, MC mentions, booth space, social media coverage.", justification: "Aligns with youth & community engagement pillar.", duration: "1 day event",
     approvals: APPROVAL_CHAIN.map(a => ({ approver: a, status: "Approved", date: d("2026-07-05") })),
-    deliverables: [
-      { id: "dl1", name: "Connectivity Setup", category: "Sponsor", owner: "Technical Team", dueDate: d("2026-08-13"), status: "In Progress", evidence: "", notes: "" },
-      { id: "dl2", name: "Tent & Backdrop Printing", category: "Sponsor", owner: "Events Team", dueDate: d("2026-08-14"), status: "In Progress", evidence: "", notes: "Booth layout confirmed" },
-      { id: "dl3", name: "Giveaway Gifts", category: "Sponsor", owner: "Mua", dueDate: d("2026-08-14"), status: "Pending", evidence: "", notes: "" },
-      { id: "dl4", name: "Logo Placement", category: "Partner", owner: "Organizer", dueDate: d("2026-08-10"), status: "Done", evidence: "Banner proof received", notes: "" },
-      { id: "dl5", name: "MC Mentions", category: "Partner", owner: "Organizer", dueDate: d("2026-08-15"), status: "Pending", evidence: "", notes: "" },
-      { id: "dl6", name: "Social Media Post", category: "Partner", owner: "Organizer", dueDate: d("2026-08-16"), status: "Pending", evidence: "", notes: "" },
-      { id: "dl7", name: "Photos & Media Coverage", category: "Partner", owner: "Organizer", dueDate: d("2026-08-17"), status: "Pending", evidence: "", notes: "" },
+    sponsorDeliverables: [
+      { id: "sdl1", name: "Tents", department: "Events Team", dueDate: d("2026-08-13"), status: "In Progress", evidence: "", notes: "3 tents confirmed with vendor", inKindValue: 9000 },
+      { id: "sdl2", name: "Backdrop Printing", department: "Marketing", dueDate: d("2026-08-12"), status: "Pending", evidence: "", notes: "", inKindValue: 3500 },
+      { id: "sdl3", name: "Giveaway Gifts", department: "Marketing", dueDate: d("2026-08-14"), status: "Pending", evidence: "", notes: "200 kids' goodie bags", inKindValue: 12000 },
+      { id: "sdl4", name: "Event Setup Support", department: "Events Team", dueDate: d("2026-08-15"), status: "Pending", evidence: "", notes: "", inKindValue: null },
+      { id: "sdl5", name: "Connectivity", department: "Network Ops", dueDate: d("2026-08-13"), status: "Pending", evidence: "", notes: "", inKindValue: null, connectivityType: "5G AirFibre", deviceReturnDate: null, deviceReturnStatus: null },
+    ],
+    partnerDeliverables: [
+      { id: "dl1", name: "Logo & Branding at Event", dueDate: d("2026-08-10"), status: "Done", evidence: "Banner proof received", notes: "", inKindValue: null },
+      { id: "dl2", name: "Free Stall Space", dueDate: d("2026-08-14"), status: "In Progress", evidence: "", notes: "Booth layout confirmed", inKindValue: 5000 },
+      { id: "dl3", name: "MC Mentions", dueDate: d("2026-08-15"), status: "Pending", evidence: "", notes: "", inKindValue: null },
+      { id: "dl4", name: "Branding on Social Media", dueDate: d("2026-08-16"), status: "Pending", evidence: "", notes: "", inKindValue: null },
+      { id: "dl5", name: "Photos Received", dueDate: d("2026-08-17"), status: "Pending", evidence: "", notes: "", inKindValue: null },
+      { id: "dl6", name: "Monthly Report", dueDate: d("2026-09-05"), status: "Pending", evidence: "", notes: "", inKindValue: null },
     ],
     payment: seedPayment({
       invoiceStatus: "Received",
@@ -372,15 +370,12 @@ const SEED_SPONSORSHIPS = [
       payment: { status: "Pending", dueDate: d("2026-08-05"), owner: "Finance" },
       financeFollowUpDate: d("2026-07-14"),
     }),
-    connectivity: [
-      { id: "c1", type: "5G AirFibre", technicalTeam: "Network Ops", setupDate: d("2026-08-13"), setupStatus: "Not Started", needsReturn: true, deviceReturnDate: null, deviceReturnStatus: null },
-    ],
     notes: "", tasks: [],
   },
   {
     id: "sp-22", requestId: "SP-2026-022", eventName: "21st Anniversary — Senior Citizen Activity Day", organizer: "Ooredoo CSR Programme (Internal)",
     eventType: "Internal CSR", region: "Malé", valueType: "In-Kind", sponsorAmount: 0, inKindDetails: "Venue support, transport coordination, internal comms and photography coverage.",
-    sponsorshipType: "In-Kind", stage: "Memo Approval", stageEnteredDate: d("2026-07-15"), receivedDate: d("2026-06-25"), eventDate: d("2026-08-02"),
+    sponsorshipType: "In-Kind", stage: "Memo Approval", stageEnteredDate: d("2026-07-15"), receivedDate: d("2026-06-25"), eventDate: d("2026-08-02"), eventEndDate: null,
     memoNumber: "MEMO-2026-046", budgetCode: "MKT-CSR-0430",
     background: "Activity day for senior citizens in Malé, anniversary CSR programme.", benefits: "Internal engagement, community goodwill.",
     justification: "Part of 21st anniversary flagship CSR calendar.", duration: "Half day",
@@ -392,16 +387,18 @@ const SEED_SPONSORSHIPS = [
       { approver: "Chief Financial Officer", status: "Pending", date: null },
       { approver: "CEO", status: "Pending", date: null },
     ],
-    deliverables: [
-      { id: "dl1", name: "Venue Booking", category: "Sponsor", owner: "CSR Team", dueDate: d("2026-07-25"), status: "In Progress", evidence: "", notes: "" },
-      { id: "dl2", name: "Activity Plan", category: "Sponsor", owner: "Mua", dueDate: d("2026-07-24"), status: "Pending", evidence: "", notes: "" },
+    sponsorDeliverables: [
+      { id: "sdl1", name: "Event Setup Support", department: "CSR Team", dueDate: d("2026-07-25"), status: "In Progress", evidence: "", notes: "Venue booking", inKindValue: null },
     ],
-    payment: seedPayment(), connectivity: [], notes: "", tasks: [],
+    partnerDeliverables: [
+      { id: "dl2", name: "Public Relations Opportunity", dueDate: d("2026-07-24"), status: "Pending", evidence: "", notes: "Activity plan / internal comms", inKindValue: null },
+    ],
+    payment: seedPayment(), notes: "", tasks: [],
   },
   {
     id: "sp-10", requestId: "SP-2026-010", eventName: "Eid Al-Adha Regional Event — Kulhudhuffushi", organizer: "Ministry of Youth, Sports & Community Empowerment",
     eventType: "Regional / Religious", region: "Kulhudhuffushi", valueType: "Cash", sponsorAmount: 60000, inKindDetails: "",
-    sponsorshipType: "Cash", stage: "Memo Approval", stageEnteredDate: d("2026-07-16"), receivedDate: d("2026-06-28"), eventDate: d("2026-07-28"),
+    sponsorshipType: "Cash", stage: "Memo Approval", stageEnteredDate: d("2026-07-16"), receivedDate: d("2026-06-28"), eventDate: d("2026-07-28"), eventEndDate: null,
     memoNumber: "MEMO-2026-044", budgetCode: "MKT-REG-0412",
     background: "Regional Eid Al-Adha celebration sponsorship, northern atoll.", benefits: "Branding, VIP mentions.", justification: "Recurring annual regional goodwill sponsorship.", duration: "1 day",
     approvals: [
@@ -412,37 +409,38 @@ const SEED_SPONSORSHIPS = [
       { approver: "Chief Financial Officer", status: "Pending", date: null },
       { approver: "CEO", status: "Pending", date: null },
     ],
-    deliverables: [
-      { id: "dl1", name: "Logo Placement", category: "Partner", owner: "Organizer", dueDate: d("2026-07-25"), status: "Pending", evidence: "", notes: "" },
-      { id: "dl2", name: "Media Coverage", category: "Partner", owner: "Organizer", dueDate: d("2026-07-29"), status: "Pending", evidence: "", notes: "" },
+    sponsorDeliverables: [],
+    partnerDeliverables: [
+      { id: "dl1", name: "Logo & Branding at Event", dueDate: d("2026-07-25"), status: "Pending", evidence: "", notes: "", inKindValue: null },
+      { id: "dl2", name: "Public Relations Opportunity", dueDate: d("2026-07-29"), status: "Pending", evidence: "", notes: "Media coverage", inKindValue: null },
     ],
     payment: seedPayment({ invoiceStatus: "Pending", payment: { status: "Pending", dueDate: d("2026-07-26"), owner: "Finance" }, financeFollowUpDate: d("2026-07-20") }),
-    connectivity: [], notes: "", tasks: [],
+    notes: "", tasks: [],
   },
   {
     id: "sp-25", requestId: "SP-2026-025", eventName: "Inter-Atoll Swimming Championship", organizer: "Ministry of Youth, Sports & Community Empowerment",
     eventType: "Sports", region: "Multi-atoll", valueType: "Cash + In-Kind", sponsorAmount: 150000, inKindDetails: "Live results connectivity and on-site technical support across venues.",
-    sponsorshipType: "Cash + Connectivity + Devices", stage: "Under Review", stageEnteredDate: d("2026-07-19"), receivedDate: d("2026-07-08"), eventDate: d("2026-09-02"),
+    sponsorshipType: "Cash + Connectivity + Devices", stage: "Under Review", stageEnteredDate: d("2026-07-19"), receivedDate: d("2026-07-08"), eventDate: d("2026-09-02"), eventEndDate: d("2026-09-04"),
     memoNumber: "", budgetCode: "",
     background: "Multi-atoll swimming championship requiring live results connectivity.", benefits: "Branding, connectivity naming rights, VIP access.",
     justification: "High visibility national sports event.", duration: "3 days",
     approvals: initApprovals(),
-    deliverables: [{ id: "dl1", name: "Evaluation Notes", category: "Sponsor", owner: "Mua", dueDate: d("2026-07-24"), status: "In Progress", evidence: "", notes: "" }],
-    payment: seedPayment(),
-    connectivity: [
-      { id: "c1", type: "ILL Connection", technicalTeam: "Network Ops", setupDate: d("2026-08-30"), setupStatus: "Not Started", needsReturn: false, deviceReturnDate: null, deviceReturnStatus: null },
-      { id: "c2", type: "MiFi Device", technicalTeam: "Network Ops", setupDate: d("2026-07-19"), setupStatus: "Completed", needsReturn: true, deviceReturnDate: d("2026-07-19"), deviceReturnStatus: "Pending Return" },
+    sponsorDeliverables: [
+      { id: "sdl1", name: "Connectivity", department: "Network Ops", dueDate: d("2026-08-30"), status: "Pending", evidence: "", notes: "", inKindValue: null, connectivityType: "ILL Connection", deviceReturnDate: null, deviceReturnStatus: null },
+      { id: "sdl2", name: "Connectivity", department: "Network Ops", dueDate: d("2026-07-19"), status: "Done", evidence: "", notes: "Temporary device from prior test run is overdue for return.", inKindValue: null, connectivityType: "MiFi Device", deviceReturnDate: d("2026-07-19"), deviceReturnStatus: "Pending Return" },
     ],
+    partnerDeliverables: [{ id: "dl1", name: "Evaluation Notes", dueDate: d("2026-07-24"), status: "In Progress", evidence: "", notes: "", inKindValue: null }],
+    payment: seedPayment(),
     notes: "Temporary device from prior test run is overdue for return.", tasks: [],
   },
   {
     id: "sp-18", requestId: "SP-2026-018", eventName: "Male' City Marathon 2026", organizer: "Male' City Marathon Organizing Committee",
     eventType: "Sports", region: "Malé", valueType: "Cash", sponsorAmount: 200000, inKindDetails: "",
-    sponsorshipType: "Cash + Connectivity", stage: "Under Review", stageEnteredDate: d("2026-07-12"), receivedDate: d("2026-07-01"), eventDate: d("2026-09-20"),
+    sponsorshipType: "Cash + Connectivity", stage: "Under Review", stageEnteredDate: d("2026-07-12"), receivedDate: d("2026-07-01"), eventDate: d("2026-09-20"), eventEndDate: null,
     memoNumber: "", budgetCode: "",
     background: "Annual flagship marathon, nationwide visibility.", benefits: "Title branding, booth, live connectivity, VIP.", justification: "Highest-reach annual sports sponsorship.", duration: "1 day",
     approvals: initApprovals(),
-    deliverables: [], payment: seedPayment(), connectivity: [], notes: "", tasks: [],
+    sponsorDeliverables: [], partnerDeliverables: [], payment: seedPayment(), notes: "", tasks: [],
   },
 ];
 
@@ -450,7 +448,7 @@ const SEED_SPONSORSHIPS = [
 const DEFAULT_THRESHOLDS = {
   approvalWarnDays: 3, approvalUrgentDays: 4, approvalCriticalDays: 6,
   connectivityWindowDays: 7, connectivityCriticalDays: 2,
-  eventApprovalWindowDays: 5, intakeStallDays: 3,
+  eventApprovalWindowDays: 5,
 };
 let THRESHOLDS = { ...DEFAULT_THRESHOLDS };
 
@@ -474,10 +472,10 @@ function generateFollowUps(sp) {
         });
       }
     } else {
-      items.push({ text: `All approvers have signed off — advance this request to Approved.`, level: 2, category: "Approval", owner: "You", sortDate: sp.stageEnteredDate });
+      items.push({ text: `All approvers have signed off — this should auto-advance to Execution; check if it's stuck.`, level: 2, category: "Approval", owner: "You", sortDate: sp.stageEnteredDate });
     }
   }
-  if (["Under Review", "Memo Preparation"].includes(sp.stage) && daysInStage >= T.approvalWarnDays) {
+  if (sp.stage === "Under Review" && daysInStage >= T.approvalWarnDays) {
     items.push({
       text: `Request stalled at "${sp.stage}" for ${daysInStage} days.`,
       level: daysInStage >= T.approvalCriticalDays ? 4 : daysInStage >= T.approvalUrgentDays ? 3 : 2,
@@ -501,34 +499,34 @@ function generateFollowUps(sp) {
     }
   }
 
-  (sp.connectivity || []).forEach((c) => {
-    if (c.setupStatus !== "Completed" && daysToEvent >= 0 && daysToEvent <= T.connectivityWindowDays) {
-      items.push({ text: `${c.type} setup due in ${daysToEvent} day${daysToEvent === 1 ? "" : "s"}.`, level: daysToEvent <= T.connectivityCriticalDays ? 4 : 3, category: "Connectivity", owner: c.technicalTeam || "Technical Team", sortDate: c.setupDate || sp.eventDate });
+  // Connectivity items now live inside Sponsor Deliverables (identified by a connectivityType) —
+  // still get their own early-warning window ahead of the event, plus device-return tracking.
+  (sp.sponsorDeliverables || []).forEach((dl) => {
+    if (!dl.connectivityType) return;
+    if (dl.status !== "Done" && daysToEvent >= 0 && daysToEvent <= T.connectivityWindowDays) {
+      items.push({ text: `${dl.connectivityType} setup due in ${daysToEvent} day${daysToEvent === 1 ? "" : "s"}.`, level: daysToEvent <= T.connectivityCriticalDays ? 4 : 3, category: "Sponsor Deliverables", owner: dl.department || "Technical Team", sortDate: dl.dueDate || sp.eventDate });
     }
-    if (c.needsReturn && c.deviceReturnStatus === "Pending Return" && c.deviceReturnDate) {
-      const overdue = daysBetween(TODAY, c.deviceReturnDate);
-      if (overdue >= 0) items.push({ text: `${c.type} should be returned (${overdue} day${overdue === 1 ? "" : "s"} overdue).`, level: 4, category: "Device", owner: "You", sortDate: c.deviceReturnDate });
+    if (dl.deviceReturnDate && dl.deviceReturnStatus !== "Returned") {
+      const overdue = daysBetween(TODAY, dl.deviceReturnDate);
+      if (overdue >= 0) items.push({ text: `${dl.connectivityType} should be returned (${overdue} day${overdue === 1 ? "" : "s"} overdue).`, level: 4, category: "Device Return", owner: "You", sortDate: dl.deviceReturnDate });
     }
   });
 
-  if (sp.deliverables && sp.deliverables.length && !["Rejected", "Archived"].includes(sp.stage)) {
-    // Overdue = due date has passed (TODAY is after the due date).
-    DELIVERABLE_CATEGORIES.forEach(cat => {
-      const overdueItems = sp.deliverables.filter(x => (x.category || "Sponsor") === cat && x.status !== "Done" && daysBetween(TODAY, x.dueDate) > 0);
-      if (overdueItems.length > 0) {
+  Object.values(DELIVERABLE_KIND).forEach(({ field, label }) => {
+    const list = sp[field];
+    if (list && list.length) {
+      // Overdue = due date has passed (TODAY is after the due date). Previously inverted — fixed.
+      const overdueItems = list.filter(x => x.status !== "Done" && daysBetween(TODAY, x.dueDate) > 0);
+      if (overdueItems.length > 0 && !["Rejected", "Archived"].includes(sp.stage)) {
         items.push({
-          text: `${overdueItems.length} ${cat} Deliverable${overdueItems.length === 1 ? "" : "s"} past due (${overdueItems.map(x => x.name).join(", ")}).`,
-          level: 4, category: `${cat} Deliverables`, owner: cat === "Sponsor" ? "You" : "Organizer",
-          sortDate: overdueItems.sort((a, b) => a.dueDate - b.dueDate)[0].dueDate,
+          text: `${overdueItems.length} ${label.toLowerCase()} item${overdueItems.length === 1 ? "" : "s"} past due date (${overdueItems.map(x => x.name).join(", ")}).`,
+          level: 4, category: label, owner: "You", sortDate: overdueItems.sort((a, b) => a.dueDate - b.dueDate)[0].dueDate,
         });
       }
-    });
-  }
-  if (daysToEvent >= 0 && daysToEvent <= T.eventApprovalWindowDays && !["Approved", "Execution", "Completed", "Archived", "Rejected"].includes(sp.stage)) {
+    }
+  });
+  if (daysToEvent >= 0 && daysToEvent <= T.eventApprovalWindowDays && !["Execution", "Completed", "Archived", "Rejected"].includes(sp.stage)) {
     items.push({ text: `Event starts in ${daysToEvent} day${daysToEvent === 1 ? "" : "s"} — sponsorship not yet approved.`, level: 4, category: "Deadline", owner: "You", sortDate: sp.eventDate });
-  }
-  if (sp.stage === "Information Required") {
-    items.push({ text: `Organizer has not submitted required information (${daysInStage} day${daysInStage === 1 ? "" : "s"} since flagged).`, level: daysInStage >= T.intakeStallDays ? 3 : 1, category: "Intake", owner: "Organizer", sortDate: sp.stageEnteredDate });
   }
   return items.map((it, i) => ({ ...it, sponsorshipId: sp.id, requestId: sp.requestId, eventName: sp.eventName, key: `${sp.id}::${it.category}::${i}` }));
 }
@@ -545,7 +543,7 @@ function computeHealth(sp) {
 }
 
 function stageBadgeClass(stage) {
-  if (["Approved", "Completed"].includes(stage)) return "ok";
+  if (["Completed"].includes(stage)) return "ok";
   if (["Execution", "Memo Approval"].includes(stage)) return "info";
   if (["Rejected"].includes(stage)) return "crit";
   if (["Archived"].includes(stage)) return "neutral";
@@ -567,12 +565,7 @@ function levelBadge(level) {
 
 /* ============================== MAIN APP ============================== */
 export default function SponsorshipTracker() {
-  const [session, setSession] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [dataLoading, setDataLoading] = useState(false);
-  const [dataError, setDataError] = useState("");
-
-  const [sponsorships, setSponsorships] = useState([]);
+  const [sponsorships, setSponsorships] = useState(SEED_SPONSORSHIPS);
   const [view, setView] = useState("dashboard");
   const [selectedId, setSelectedId] = useState(null);
   const [query, setQuery] = useState("");
@@ -582,58 +575,45 @@ export default function SponsorshipTracker() {
   const [showAcked, setShowAcked] = useState(false);
   const [feedExpanded, setFeedExpanded] = useState(false);
   const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
+  const [annualBudget, setAnnualBudget] = useState(2500000);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newRequestOpen, setNewRequestOpen] = useState(false);
-  const [editMode, setEditMode] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState(false);
 
-  // Auth: check for an existing session on load, and keep listening for
-  // sign-in / sign-out so the UI reacts immediately either way.
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthLoading(false); });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, sess) => setSession(sess));
-    return () => listener.subscription.unsubscribe();
+    try {
+      const a = localStorage.getItem("sot:acknowledged");
+      if (a) setDismissed(JSON.parse(a));
+    } catch (e) { /* no saved acknowledgements yet */ }
+    try {
+      const t = localStorage.getItem("sot:thresholds");
+      if (t) setThresholds({ ...DEFAULT_THRESHOLDS, ...JSON.parse(t) });
+    } catch (e) { /* no saved thresholds yet */ }
+    try {
+      const b = localStorage.getItem("sot:annualBudget");
+      if (b) setAnnualBudget(Number(JSON.parse(b)) || 2500000);
+    } catch (e) { /* no saved budget yet */ }
+    setLoaded(true);
   }, []);
-
-  // Once logged in, load this user's sponsorships and settings from Supabase.
-  useEffect(() => {
-    if (!session) { setSponsorships([]); setLoaded(false); return; }
-    let cancelled = false;
-    (async () => {
-      setDataLoading(true);
-      setDataError("");
-      try {
-        const [{ data: rows, error: spErr }, { data: settingsRow, error: setErr }] = await Promise.all([
-          supabase.from("sponsorships").select("*").order("received_date", { ascending: false }),
-          supabase.from("app_settings").select("*").eq("user_id", session.user.id).maybeSingle(),
-        ]);
-        if (spErr) throw spErr;
-        if (setErr) throw setErr;
-        if (cancelled) return;
-        setSponsorships((rows || []).map(spFromDbRow));
-        if (settingsRow) {
-          if (settingsRow.thresholds) setThresholds({ ...DEFAULT_THRESHOLDS, ...settingsRow.thresholds });
-          if (settingsRow.acknowledged) setDismissed(settingsRow.acknowledged);
-        }
-      } catch (e) {
-        if (!cancelled) setDataError(e.message || "Couldn't load your data from Supabase.");
-      } finally {
-        if (!cancelled) { setDataLoading(false); setLoaded(true); }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [session]);
 
   THRESHOLDS = thresholds;
 
-  // Persist acknowledged follow-ups + threshold settings to Supabase (debounced-ish via `loaded` guard
-  // so we don't write on the initial load we just fetched).
   useEffect(() => {
-    if (!loaded || !session) return;
-    supabase.from("app_settings").upsert({ user_id: session.user.id, thresholds, acknowledged: dismissed, updated_at: new Date().toISOString() })
-      .then(({ error }) => setSaveError(!!error));
-  }, [dismissed, thresholds, loaded, session]);
+    if (!loaded) return;
+    try { localStorage.setItem("sot:acknowledged", JSON.stringify(dismissed)); setSaveError(false); }
+    catch (e) { setSaveError(true); }
+  }, [dismissed, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    try { localStorage.setItem("sot:thresholds", JSON.stringify(thresholds)); } catch (e) { /* best effort */ }
+  }, [thresholds, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    try { localStorage.setItem("sot:annualBudget", JSON.stringify(annualBudget)); } catch (e) { /* best effort */ }
+  }, [annualBudget, loaded]);
 
   const allFollowUpsRaw = useMemo(() => {
     const arr = sponsorships.flatMap(generateFollowUps);
@@ -646,140 +626,115 @@ export default function SponsorshipTracker() {
   function acknowledge(key) { setDismissed(prev => ({ ...prev, [key]: true })); }
   function unacknowledge(key) { setDismissed(prev => { const n = { ...prev }; delete n[key]; return n; }); }
 
-  function openDetail(id, tab) { setSelectedId(id); setDetailTab(tab || "overview"); setEditMode(false); }
-  function closeDetail() { setSelectedId(null); setEditMode(false); }
+  function openDetail(id, tab) { setSelectedId(id); setDetailTab(tab || "overview"); }
+  function closeDetail() { setSelectedId(null); }
 
   function nextRequestId() {
     const nums = sponsorships.map(s => parseInt((s.requestId.match(/(\d+)$/) || [0, 0])[1], 10));
     return `SP-2026-${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(3, "0")}`;
   }
 
-  // Every mutator below updates local state immediately (so the UI never waits
-  // on the network) and pushes the resulting row to Supabase in the background.
-  // If a save fails, it's logged and surfaced via dataError rather than silently lost.
-  function persist(sp) {
-    if (!session) return;
-    supabase.from("sponsorships").update(spToDbRow(sp, session.user.id)).eq("id", sp.id)
-      .then(({ error }) => { if (error) setDataError("Couldn't save a change: " + error.message); });
-  }
-  function applyAndPersist(spId, updater) {
-    setSponsorships(prev => {
-      let updated = null;
-      const next = prev.map(s => {
-        if (s.id !== spId) return s;
-        updated = updater(s);
-        return updated;
-      });
-      if (updated) persist(updated);
-      return next;
-    });
-  }
-
   function createSponsorship(data) {
-    const id = crypto.randomUUID();
+    const id = "sp-" + Date.now();
     const newSp = {
       id, requestId: nextRequestId(), eventName: data.eventName || "Untitled Event", organizer: data.organizer || "Unknown Organizer",
       eventType: data.eventType || "", region: data.region || "",
       valueType: data.valueType || "Cash", sponsorAmount: Number(data.sponsorAmount) || 0, inKindDetails: data.inKindDetails || "",
       sponsorshipType: data.sponsorshipType || "", stage: "New Request", stageEnteredDate: TODAY, receivedDate: TODAY,
       eventDate: data.eventDate ? parseDateInput(data.eventDate) : TODAY,
+      eventEndDate: data.eventEndDate ? parseDateInput(data.eventEndDate) : null,
       memoNumber: "", budgetCode: "", background: data.background || "", benefits: "", justification: "", duration: "",
-      approvals: initApprovals(), deliverables: [], payment: seedPayment(), connectivity: [],
+      approvals: initApprovals(), sponsorDeliverables: [], partnerDeliverables: [], payment: seedPayment(),
       notes: "", tasks: [],
     };
     setSponsorships(prev => [newSp, ...prev]);
     setNewRequestOpen(false);
     openDetail(id);
-    if (session) {
-      supabase.from("sponsorships").insert(spToDbRow(newSp, session.user.id))
-        .then(({ error }) => { if (error) setDataError("Couldn't save the new request: " + error.message); });
-    }
   }
 
-  function updateFields(spId, patch) { applyAndPersist(spId, s => ({ ...s, ...patch })); }
+  function updateFields(spId, patch) { setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, ...patch } : s)); }
   function updatePaymentSub(spId, subKey, patch) {
-    applyAndPersist(spId, s => ({ ...s, payment: { ...s.payment, [subKey]: { ...s.payment[subKey], ...patch } } }));
+    setSponsorships(prev => prev.map(s => s.id !== spId ? s : { ...s, payment: { ...s.payment, [subKey]: { ...s.payment[subKey], ...patch } } }));
   }
   function updatePaymentTop(spId, patch) {
-    applyAndPersist(spId, s => ({ ...s, payment: { ...s.payment, ...patch } }));
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, payment: { ...s.payment, ...patch } } : s));
   }
-  function addConnectivity(spId, item) {
-    applyAndPersist(spId, s => ({ ...s, connectivity: [...(s.connectivity || []), { id: "c-" + Date.now(), technicalTeam: "", setupDate: null, setupStatus: "Not Started", needsReturn: HARDWARE_TYPES.includes(item.type), deviceReturnDate: null, deviceReturnStatus: null, ...item }] }));
+  // kind is "sponsor" (what we provide) or "partner" (what the partner/organizer provides back)
+  function addDeliverable(spId, kind, dl) {
+    const field = DELIVERABLE_KIND[kind].field;
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, [field]: [...(s[field] || []), { id: "dl-" + Date.now(), status: "Pending", evidence: "", notes: "", ...dl }] } : s));
   }
-  function updateConnectivityItem(spId, cid, patch) {
-    applyAndPersist(spId, s => ({ ...s, connectivity: s.connectivity.map(c => c.id === cid ? { ...c, ...patch } : c) }));
+  function removeDeliverable(spId, kind, dlId) {
+    const field = DELIVERABLE_KIND[kind].field;
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, [field]: s[field].filter(dd => dd.id !== dlId) } : s));
   }
-  function removeConnectivityItem(spId, cid) {
-    applyAndPersist(spId, s => ({ ...s, connectivity: s.connectivity.filter(c => c.id !== cid) }));
+  function editDeliverable(spId, kind, dlId, patch) {
+    const field = DELIVERABLE_KIND[kind].field;
+    setSponsorships(prev => prev.map(s => s.id !== spId ? s : { ...s, [field]: s[field].map(dd => dd.id === dlId ? { ...dd, ...patch } : dd) }));
   }
-  function addDeliverable(spId, dl) {
-    applyAndPersist(spId, s => ({ ...s, deliverables: [...s.deliverables, { id: "dl-" + Date.now(), status: "Pending", evidence: "", notes: "", ...dl }] }));
-  }
-  function removeDeliverable(spId, dlId) {
-    applyAndPersist(spId, s => ({ ...s, deliverables: s.deliverables.filter(dd => dd.id !== dlId) }));
-  }
-  function editDeliverable(spId, dlId, patch) {
-    applyAndPersist(spId, s => ({ ...s, deliverables: s.deliverables.map(dd => dd.id === dlId ? { ...dd, ...patch } : dd) }));
-  }
-  function cycleDeliverable(spId, dlId) {
-    applyAndPersist(spId, s => ({ ...s, deliverables: s.deliverables.map(dl => dl.id !== dlId ? dl : { ...dl, status: dl.status === "Pending" ? "In Progress" : dl.status === "In Progress" ? "Done" : "Pending" }) }));
+  function cycleDeliverable(spId, kind, dlId) {
+    const field = DELIVERABLE_KIND[kind].field;
+    setSponsorships(prev => prev.map(s => {
+      if (s.id !== spId) return s;
+      return { ...s, [field]: s[field].map(dl => dl.id !== dlId ? dl : { ...dl, status: dl.status === "Pending" ? "In Progress" : dl.status === "In Progress" ? "Done" : "Pending" }) };
+    }));
   }
   function addTask(spId, text) {
-    applyAndPersist(spId, s => ({ ...s, tasks: [...s.tasks, { id: "t-" + Date.now(), text, done: false }] }));
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, tasks: [...s.tasks, { id: "t-" + Date.now(), text, done: false }] } : s));
   }
   function loadSuggestedTasks(spId, stage) {
-    applyAndPersist(spId, s => {
+    setSponsorships(prev => prev.map(s => {
+      if (s.id !== spId) return s;
       const existing = new Set(s.tasks.map(t => t.text));
       const toAdd = (SUGGESTED_TASKS[stage] || []).filter(t => !existing.has(t)).map(text => ({ id: "t-" + Date.now() + Math.random(), text, done: false }));
       return { ...s, tasks: [...s.tasks, ...toAdd] };
-    });
+    }));
   }
   function toggleTaskItem(spId, taskId) {
-    applyAndPersist(spId, s => ({ ...s, tasks: s.tasks.map(t => t.id === taskId ? { ...t, done: !t.done } : t) }));
+    setSponsorships(prev => prev.map(s => s.id !== spId ? s : { ...s, tasks: s.tasks.map(t => t.id === taskId ? { ...t, done: !t.done } : t) }));
   }
   function removeTask(spId, taskId) {
-    applyAndPersist(spId, s => ({ ...s, tasks: s.tasks.filter(t => t.id !== taskId) }));
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, tasks: s.tasks.filter(t => t.id !== taskId) } : s));
   }
   function advanceStage(spId, dir) {
-    applyAndPersist(spId, s => {
+    setSponsorships(prev => prev.map(s => {
+      if (s.id !== spId) return s;
       const idx = STAGES.indexOf(s.stage);
       if (idx === -1) return s;
       const nextIdx = idx + dir;
       if (nextIdx < 0 || nextIdx >= STAGES.length) return s;
       return { ...s, stage: STAGES[nextIdx], stageEnteredDate: TODAY };
-    });
+    }));
   }
   function setStageDirect(spId, stage) {
-    applyAndPersist(spId, s => ({ ...s, stage, stageEnteredDate: TODAY }));
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, stage, stageEnteredDate: TODAY } : s));
   }
   function setApproverStatus(spId, approver, status) {
-    applyAndPersist(spId, s => {
+    setSponsorships(prev => prev.map(s => {
+      if (s.id !== spId) return s;
       const approvals = s.approvals.map(a => a.approver === approver ? { ...a, status, date: status === "Pending" ? null : TODAY } : a);
       let stage = s.stage;
       if (status === "Rejected") stage = "Rejected";
+      else if (approvals.every(a => a.status === "Approved") && s.stage === "Memo Approval") stage = "Execution"; // fully signed off — auto-advance, no separate "Approved" holding stage
       return { ...s, approvals, stage, stageEnteredDate: stage !== s.stage ? TODAY : s.stageEnteredDate };
-    });
+    }));
   }
   function resetApprovals(spId) {
-    applyAndPersist(spId, s => ({ ...s, approvals: initApprovals() }));
+    setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, approvals: initApprovals() } : s));
   }
   function deleteSponsorship(spId) {
     setSponsorships(prev => prev.filter(s => s.id !== spId));
     closeDetail();
-    if (session) {
-      supabase.from("sponsorships").delete().eq("id", spId)
-        .then(({ error }) => { if (error) setDataError("Couldn't delete: " + error.message); });
-    }
   }
 
   function exportToExcel() {
     const rows = sponsorships.map(s => {
       const h = computeHealth(s);
       const fu = generateFollowUps(s);
-      const sponsorItems = s.deliverables.filter(x => (x.category || "Sponsor") === "Sponsor");
-      const partnerItems = s.deliverables.filter(x => x.category === "Partner");
-      const sponsorDone = sponsorItems.filter(x => x.status === "Done").length;
-      const partnerDone = partnerItems.filter(x => x.status === "Done").length;
+      const sponsorDone = (s.sponsorDeliverables || []).filter(x => x.status === "Done").length;
+      const partnerDone = (s.partnerDeliverables || []).filter(x => x.status === "Done").length;
+      const inKindTotal = [...(s.sponsorDeliverables || []), ...(s.partnerDeliverables || [])]
+        .reduce((sum, x) => sum + (Number(x.inKindValue) || 0), 0);
       return {
         "Request ID": s.requestId,
         "Event Name": s.eventName,
@@ -792,6 +747,7 @@ export default function SponsorshipTracker() {
         "Sponsor Amount (MVR)": s.valueType === "In-Kind" ? "" : s.sponsorAmount,
         "In-Kind Details": s.inKindDetails || "",
         "Event Date": fmtDate(s.eventDate),
+        "Event End Date": s.eventEndDate ? fmtDate(s.eventEndDate) : "",
         "Request Received": fmtDate(s.receivedDate),
         "Memo Number": s.memoNumber,
         "Budget Code": s.budgetCode,
@@ -800,11 +756,10 @@ export default function SponsorshipTracker() {
         "PO Status": s.payment.po.status,
         "Payment Status": s.payment.payment.status,
         "Payment Due": fmtDate(s.payment.payment.dueDate),
-        "Connectivity Items": (s.connectivity || []).map(c => c.type).join(", "),
-        "Sponsor Deliverables Progress": sponsorItems.length ? `${sponsorDone}/${sponsorItems.length}` : "",
-        "Sponsor Deliverables (open)": sponsorItems.filter(x => x.status !== "Done").map(x => x.name).join(", "),
-        "Partner Deliverables Progress": partnerItems.length ? `${partnerDone}/${partnerItems.length}` : "",
-        "Partner Deliverables (open)": partnerItems.filter(x => x.status !== "Done").map(x => x.name).join(", "),
+        "Connectivity Items": (s.sponsorDeliverables || []).filter(x => x.connectivityType).map(x => x.connectivityType).join(", "),
+        "Sponsor Deliverables Progress": (s.sponsorDeliverables || []).length ? `${sponsorDone}/${s.sponsorDeliverables.length}` : "",
+        "Partner Deliverables Progress": (s.partnerDeliverables || []).length ? `${partnerDone}/${s.partnerDeliverables.length}` : "",
+        "Deliverables In-Kind Value (MVR)": inKindTotal || "",
         "Open Follow-ups": fu.map(f => f.text).join(" | "),
       };
     });
@@ -821,11 +776,9 @@ export default function SponsorshipTracker() {
   const pendingApprovals = sponsorships.filter(s => s.stage === "Memo Approval");
   const upcomingEvents = sponsorships.filter(s => daysBetween(s.eventDate, TODAY) >= 0 && daysBetween(s.eventDate, TODAY) <= 21).sort((a, b) => a.eventDate - b.eventDate);
   const pendingPayments = sponsorships.filter(s => s.payment && s.payment.payment.status === "Pending");
-  const connectivityPending = sponsorships.flatMap(s => (s.connectivity || []).filter(c => c.setupStatus !== "Completed").map(c => ({ sp: s, c })));
-  const deviceReturns = sponsorships.flatMap(s => (s.connectivity || []).filter(c => c.needsReturn && c.deviceReturnStatus === "Pending Return").map(c => ({ sp: s, c })));
   const overdueCount = allFollowUps.filter(f => f.level === 4).length;
   const recentRequests = [...sponsorships].sort((a, b) => b.receivedDate - a.receivedDate).slice(0, 5);
-  const recentApprovals = sponsorships.filter(s => ["Approved", "Execution", "Completed"].includes(s.stage)).sort((a, b) => b.stageEnteredDate - a.stageEnteredDate).slice(0, 5);
+  const recentApprovals = sponsorships.filter(s => ["Execution", "Completed"].includes(s.stage)).sort((a, b) => b.stageEnteredDate - a.stageEnteredDate).slice(0, 5);
   const sponsorsRequiringAction = ORGS.filter(o => sponsorships.some(s => s.organizer === o.name && generateFollowUps(s).some(f => f.level >= 3)));
 
   const searchResults = useMemo(() => {
@@ -838,38 +791,14 @@ export default function SponsorshipTracker() {
 
   const NAV = [
     { key: "dashboard", label: "Command Center", icon: LayoutDashboard, count: overdueCount || null },
-    { key: "pipeline", label: "Sponsorship Pipeline", icon: ListChecks, count: sponsorships.length },
     { key: "sponsors", label: "Sponsorship Profiles", icon: Users, count: sponsorships.length },
     { key: "calendar", label: "Calendar", icon: CalendarIcon, count: upcomingEvents.length },
+    { key: "pipeline", label: "Sponsorship Pipeline", icon: ListChecks, count: sponsorships.length },
   ];
-
-  if (authLoading) {
-    return (
-      <div className="sot" style={{ alignItems: "center", justifyContent: "center" }}>
-        <style>{STYLE}</style>
-        <div style={{ color: "var(--text-faint)", fontSize: 13 }}>Loading…</div>
-      </div>
-    );
-  }
-
-  if (!session) {
-    return (
-      <div className="sot" style={{ alignItems: "center", justifyContent: "center" }}>
-        <style>{STYLE}</style>
-        <LoginScreen />
-      </div>
-    );
-  }
 
   return (
     <div className="sot">
       <style>{STYLE}</style>
-      {dataError && (
-        <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 100, background: "var(--signal-crit-soft)", color: "var(--signal-crit)", padding: "8px 16px", borderRadius: 8, fontSize: 12, display: "flex", alignItems: "center", gap: 10 }}>
-          {dataError}
-          <button className="btn ghost" style={{ padding: "2px 8px", fontSize: 11 }} onClick={() => setDataError("")}>Dismiss</button>
-        </div>
-      )}
       <div className="sidebar">
         <div className="brand-row">
           <div className="brand-mark"><Signal size={14} color="#fff" /></div>
@@ -880,13 +809,7 @@ export default function SponsorshipTracker() {
             <n.icon size={15} />{n.label}{n.count ? <span className="nav-count">{n.count}</span> : null}
           </button>
         ))}
-        <div className="sidebar-foot">
-          {sponsorships.length} active sponsorships tracked · Today, {fmtDate(TODAY)}
-          <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.user.email}</span>
-            <button className="btn ghost" style={{ padding: "3px 7px", fontSize: 10.5, flexShrink: 0 }} onClick={() => supabase.auth.signOut()}><LogOut size={11} /> Log out</button>
-          </div>
-        </div>
+        <div className="sidebar-foot">{sponsorships.length} active sponsorships tracked · Today, {fmtDate(TODAY)}</div>
       </div>
 
       <div className="main">
@@ -926,23 +849,17 @@ export default function SponsorshipTracker() {
         </div>
 
         <div className="content">
-          {dataLoading ? (
-            <div className="panel-empty" style={{ padding: 60 }}>Loading your sponsorships…</div>
-          ) : (
-            <>
-              {view === "dashboard" && (
-                <DashboardView overdueCount={overdueCount} pendingApprovals={pendingApprovals} upcomingEvents={upcomingEvents}
-                  pendingPayments={pendingPayments} connectivityPending={connectivityPending} deviceReturns={deviceReturns}
-                  allFollowUps={allFollowUps} ackedFollowUps={ackedFollowUps} recentRequests={recentRequests} recentApprovals={recentApprovals}
-                  sponsorsRequiringAction={sponsorsRequiringAction} openDetail={openDetail} sponsorships={sponsorships}
-                  acknowledge={acknowledge} unacknowledge={unacknowledge} showAcked={showAcked} setShowAcked={setShowAcked}
-                  feedExpanded={feedExpanded} setFeedExpanded={setFeedExpanded} />
-              )}
-              {view === "pipeline" && <PipelineView sponsorships={filteredPipeline} stageFilter={stageFilter} setStageFilter={setStageFilter} openDetail={openDetail} />}
-              {view === "sponsors" && <SponsorshipProfilesView sponsorships={sponsorships} openDetail={openDetail} />}
-              {view === "calendar" && <CalendarView sponsorships={sponsorships} openDetail={openDetail} />}
-            </>
+          {view === "dashboard" && (
+            <DashboardView overdueCount={overdueCount} pendingApprovals={pendingApprovals} upcomingEvents={upcomingEvents}
+              pendingPayments={pendingPayments} annualBudget={annualBudget} setAnnualBudget={setAnnualBudget}
+              allFollowUps={allFollowUps} ackedFollowUps={ackedFollowUps} recentRequests={recentRequests} recentApprovals={recentApprovals}
+              sponsorsRequiringAction={sponsorsRequiringAction} openDetail={openDetail} sponsorships={sponsorships}
+              acknowledge={acknowledge} unacknowledge={unacknowledge} showAcked={showAcked} setShowAcked={setShowAcked}
+              feedExpanded={feedExpanded} setFeedExpanded={setFeedExpanded} />
           )}
+          {view === "pipeline" && <PipelineView sponsorships={filteredPipeline} stageFilter={stageFilter} setStageFilter={setStageFilter} openDetail={openDetail} />}
+          {view === "sponsors" && <SponsorshipProfilesView sponsorships={sponsorships} openDetail={openDetail} />}
+          {view === "calendar" && <CalendarView sponsorships={sponsorships} openDetail={openDetail} />}
         </div>
       </div>
 
@@ -950,13 +867,12 @@ export default function SponsorshipTracker() {
         <div className="overlay" onClick={closeDetail}>
           <div className="detail-panel" onClick={e => e.stopPropagation()}>
             <DetailPanel sp={selected} tab={detailTab} setTab={setDetailTab} close={closeDetail}
-              cycleDeliverable={cycleDeliverable} advanceStage={advanceStage} editMode={editMode} setEditMode={setEditMode}
+              cycleDeliverable={cycleDeliverable} advanceStage={advanceStage}
               updateFields={updateFields} updatePaymentSub={updatePaymentSub} updatePaymentTop={updatePaymentTop}
-              addConnectivity={addConnectivity} updateConnectivityItem={updateConnectivityItem} removeConnectivityItem={removeConnectivityItem}
               addDeliverable={addDeliverable} removeDeliverable={removeDeliverable} editDeliverable={editDeliverable}
               setStageDirect={setStageDirect} setApproverStatus={setApproverStatus} resetApprovals={resetApprovals}
               addTask={addTask} loadSuggestedTasks={loadSuggestedTasks} toggleTaskItem={toggleTaskItem} removeTask={removeTask}
-              deleteSponsorship={deleteSponsorship} />
+              deleteSponsorship={deleteSponsorship} sponsorships={sponsorships} />
           </div>
         </div>
       )}
@@ -964,7 +880,7 @@ export default function SponsorshipTracker() {
       {newRequestOpen && (
         <div className="overlay" onClick={() => setNewRequestOpen(false)}>
           <div className="detail-panel" style={{ width: 480 }} onClick={e => e.stopPropagation()}>
-            <NewRequestForm onCreate={createSponsorship} close={() => setNewRequestOpen(false)} />
+            <NewRequestForm onCreate={createSponsorship} close={() => setNewRequestOpen(false)} sponsorships={sponsorships} />
           </div>
         </div>
       )}
@@ -991,55 +907,82 @@ function Signal({ size = 14, color = "#fff" }) {
   );
 }
 
-/* ============================== LOGIN ============================== */
-function LoginScreen() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setError("");
-    setBusy(true);
-    const { error: err } = await supabase.auth.signInWithPassword({ email, password });
-    setBusy(false);
-    if (err) setError(err.message);
-  }
-
-  return (
-    <div className="panel" style={{ width: 340, padding: "28px 26px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 22 }}>
-        <div className="brand-mark"><Signal size={14} color="#fff" /></div>
-        <div>
-          <div className="brand-title disp">Sponsorship Ops</div>
-          <div className="brand-sub">Command Center</div>
-        </div>
-      </div>
-      <form onSubmit={handleSubmit}>
-        <div className="form-row">
-          <div className="kv-label">Email</div>
-          <input className="form-input" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required />
-        </div>
-        <div className="form-row">
-          <div className="kv-label">Password</div>
-          <input className="form-input" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required />
-        </div>
-        {error && <div style={{ fontSize: 12, color: "var(--signal-crit)", marginBottom: 12 }}>{error}</div>}
-        <button className="btn primary" type="submit" disabled={busy} style={{ width: "100%", justifyContent: "center" }}>{busy ? "Signing in…" : "Sign in"}</button>
-      </form>
-    </div>
-  );
-}
-
 /* ============================== DASHBOARD ============================== */
 function DashboardView(props) {
   const { overdueCount, upcomingEvents, allFollowUps, ackedFollowUps,
-    openDetail, sponsorships, acknowledge, unacknowledge, showAcked, setShowAcked } = props;
+    openDetail, sponsorships, acknowledge, unacknowledge, showAcked, setShowAcked, annualBudget, setAnnualBudget } = props;
   const [expanded, setExpanded] = useState({});
+  const [editingBudget, setEditingBudget] = useState(false);
+  const [budgetDraft, setBudgetDraft] = useState(annualBudget);
+  const [monthlyView, setMonthlyView] = useState("value"); // "value" | "count"
 
   const pendingApprovals = sponsorships.filter(s => s.stage === "Memo Approval");
   const pendingPaymentsCount = sponsorships.filter(s => s.payment && s.payment.payment.status === "Pending").length;
+
+  // Pipeline Overview — how many requests sit at each stage of the simplified funnel.
+  // "Approved" isn't a held stage anymore (auto-advances to Execution once fully signed off),
+  // so it's shown here as a cumulative count of everything that has passed Memo Approval.
+  const pipelineStats = useMemo(() => {
+    const counts = { "New Request": 0, "Under Review": 0, "Memo Approval": 0, "Execution": 0, "Completed": 0 };
+    sponsorships.forEach(s => { if (counts[s.stage] !== undefined) counts[s.stage]++; });
+    const approved = sponsorships.filter(s => ["Execution", "Completed"].includes(s.stage)).length;
+    return [
+      { label: "New Requests", num: counts["New Request"], color: "warn" },
+      { label: "Under Review", num: counts["Under Review"], color: "warn" },
+      { label: "Pending Approval", num: counts["Memo Approval"], color: "info" },
+      { label: "Approved", num: approved, color: "ok" },
+      { label: "Execution", num: counts["Execution"], color: "info" },
+      { label: "Completed", num: counts["Completed"], color: "ok" },
+    ];
+  }, [sponsorships]);
+
+  // Budget Monitoring — committed = value already approved & moving (Execution/Completed);
+  // pending = value still in the pipeline and not yet committed; balance = annual budget minus committed.
+  const budgetStats = useMemo(() => {
+    const committed = sponsorships.filter(s => ["Execution", "Completed"].includes(s.stage)).reduce((sum, s) => sum + (Number(s.sponsorAmount) || 0), 0);
+    const pending = sponsorships.filter(s => ["New Request", "Under Review", "Memo Approval"].includes(s.stage)).reduce((sum, s) => sum + (Number(s.sponsorAmount) || 0), 0);
+    // Balance = what's left after BOTH committed and pipeline-pending amounts are reserved —
+    // previously only subtracted committed, which meant the three ring segments summed to
+    // (annualBudget + pending) instead of `total`, throwing every percentage off.
+    return { committed, pending, balance: annualBudget - committed - pending };
+  }, [sponsorships, annualBudget]);
+
+  // Monthly Commitments — count & total value of sponsorships per event month (excludes Rejected/Archived).
+  const monthlyStats = useMemo(() => {
+    const map = {};
+    sponsorships.filter(s => !["Rejected", "Archived"].includes(s.stage)).forEach(s => {
+      const key = `${s.eventDate.getFullYear()}-${String(s.eventDate.getMonth() + 1).padStart(2, "0")}`;
+      if (!map[key]) map[key] = { key, count: 0, value: 0, label: s.eventDate.toLocaleDateString("en-US", { month: "short", year: "numeric" }) };
+      map[key].count += 1;
+      map[key].value += Number(s.sponsorAmount) || 0;
+    });
+    return Object.values(map).sort((a, b) => a.key.localeCompare(b.key));
+  }, [sponsorships]);
+  const maxMonthlyValue = Math.max(1, ...monthlyStats.map(m => m.value));
+  const maxMonthlyCount = Math.max(1, ...monthlyStats.map(m => m.count));
+
+  // Deliverables Monitor — aggregate sponsor vs partner deliverable status across the active portfolio
+  // so deliverable management has its own dedicated, distinguishable home in the Command Center.
+  const deliverablesMonitor = useMemo(() => {
+    const active = sponsorships.filter(s => !["Archived", "Rejected"].includes(s.stage));
+    let sponsorTotal = 0, sponsorDone = 0, sponsorOverdue = 0;
+    let partnerTotal = 0, partnerDone = 0, partnerOverdue = 0;
+    const rows = [];
+    active.forEach(s => {
+      const sd = s.sponsorDeliverables || [], pd = s.partnerDeliverables || [];
+      const sDone = sd.filter(x => x.status === "Done").length;
+      const pDone = pd.filter(x => x.status === "Done").length;
+      const sOver = sd.filter(x => x.status !== "Done" && daysBetween(TODAY, x.dueDate) > 0).length;
+      const pOver = pd.filter(x => x.status !== "Done" && daysBetween(TODAY, x.dueDate) > 0).length;
+      sponsorTotal += sd.length; partnerTotal += pd.length;
+      sponsorDone += sDone; partnerDone += pDone;
+      sponsorOverdue += sOver; partnerOverdue += pOver;
+      if (sd.length - sDone > 0 || pd.length - pDone > 0) rows.push({ sp: s, sd, pd, sDone, pDone, sOver, pOver });
+    });
+    rows.sort((a, b) => (b.sOver + b.pOver) - (a.sOver + a.pOver));
+    return { sponsorTotal, sponsorDone, sponsorOverdue, partnerTotal, partnerDone, partnerOverdue, rows };
+  }, [sponsorships]);
+  const deliverablesOverdueCount = deliverablesMonitor.sponsorOverdue + deliverablesMonitor.partnerOverdue;
 
   // Group open follow-ups by sponsorship so you see one line per PROJECT, not one per issue —
   // this is what actually tells you "what do I follow up on" at a glance instead of a flat list.
@@ -1073,19 +1016,166 @@ function DashboardView(props) {
 
   return (
     <>
-      <div className="grid stat-row">
-        <StatCard label="Critical Items" num={overdueCount} icon={<AlertTriangle size={14} />} color="crit" hot={overdueCount > 0} />
-        <StatCard label="Memo Approval Pending" num={pendingApprovals.length} icon={<ListChecks size={14} />} color="warn" />
-        <StatCard label="Events (Next 21 Days)" num={upcomingEvents.length} icon={<CalendarIcon size={14} />} color="info" />
-        <StatCard label="Pending Payments" num={pendingPaymentsCount} icon={<CreditCard size={14} />} color="warn" />
+      <div className="cc-group-label">Overview</div>
+
+      {/* Budget Monitoring + Portfolio Health share a row — both are "state of the business" donuts */}
+      <div className="grid two-col">
+        {(() => {
+          const { committed, pending, balance } = budgetStats;
+          const overage = balance < 0 ? -balance : 0;
+          const remaining = balance > 0 ? balance : 0;
+          const total = Math.max(annualBudget, committed + pending, 1);
+          const pct = (n) => Math.round((n / total) * 100);
+          const r = 52, sw = 18, cx = 60, cy = 60;
+          const circumference = 2 * Math.PI * r;
+          // Ring segments always sum EXACTLY to `total` by construction:
+          //   committed + pending + max(0, annualBudget - committed - pending) = total
+          // "Over Budget" isn't drawn as a ring slice — once Committed+Pending already fill the ring
+          // there's no proportional room left for it, so it's shown only in the legend/center label.
+          const ringSegments = [
+            { label: "Committed", n: committed, color: "var(--signal-info)" },
+            { label: "Pending", n: pending, color: "var(--signal-warn)" },
+            { label: "Balance", n: remaining, color: "var(--signal-ok)" },
+          ];
+          const arcSegments = ringSegments.filter(s => s.n > 0);
+          // Give every non-zero segment a minimum visible arc length so small-but-real amounts
+          // (like a modest Committed slice against a large annual budget) don't disappear into the ring.
+          // Positions must be derived from these ADJUSTED lengths (not the raw values) — otherwise a
+          // later segment (e.g. Balance), still positioned at its raw offset, paints over the boosted slice.
+          const MIN_ARC = 10;
+          const rawDashes = arcSegments.map(s => (s.n / total) * circumference);
+          const deficit = rawDashes.reduce((sum, d) => sum + Math.max(0, MIN_ARC - d), 0);
+          const boostablePool = rawDashes.reduce((sum, d) => sum + Math.max(0, d - MIN_ARC), 0);
+          const adjustedDashes = rawDashes.map(d => {
+            if (d < MIN_ARC) return MIN_ARC;
+            if (boostablePool > 0) return Math.max(MIN_ARC, d - deficit * ((d - MIN_ARC) / boostablePool));
+            return d;
+          });
+          let cumulativeLen = 0;
+          const arcs = arcSegments.map((seg, i) => {
+            const dash = adjustedDashes[i];
+            const gap = circumference - dash;
+            const offset = -cumulativeLen;
+            cumulativeLen += dash;
+            return <circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={seg.color} strokeWidth={sw}
+              strokeDasharray={`${dash} ${gap}`} strokeDashoffset={offset} transform={`rotate(-90 ${cx} ${cy})`} strokeLinecap={arcSegments.length > 1 ? "butt" : "round"} />;
+          });
+
+          return (
+            <div className="panel">
+              <div className="panel-head"><div className="panel-title"><CreditCard size={13} /> Budget Monitoring</div>
+                <div className="panel-title-count">FY Annual Budget: {fmtMVR(annualBudget)}</div></div>
+              <div className="panel-body pad" style={{ display: "flex", alignItems: "center", gap: 28, flexWrap: "wrap" }}>
+                <div style={{ position: "relative", width: 120, height: 120, flexShrink: 0 }}>
+                  <svg width="120" height="120" viewBox="0 0 120 120">
+                    <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--panel-2)" strokeWidth={sw} />
+                    {arcs}
+                  </svg>
+                  <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                    <div className="disp" style={{ fontSize: 20, fontWeight: 700, color: overage > 0 ? "var(--signal-crit)" : undefined }}>{pct(committed)}%</div>
+                    <div style={{ fontSize: 9.5, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: ".04em" }}>Committed</div>
+                  </div>
+                </div>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                    <div style={{ flex: 1, fontSize: 12.5, color: "var(--text-dim)" }}>Annual Budget</div>
+                    {editingBudget ? (
+                      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                        <input type="number" className="form-input" style={{ width: 130 }} autoFocus value={budgetDraft}
+                          onChange={e => setBudgetDraft(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") { setAnnualBudget(Number(budgetDraft) || 0); setEditingBudget(false); } }} />
+                        <button className="btn ok" style={{ padding: "5px 8px" }} onClick={() => { setAnnualBudget(Number(budgetDraft) || 0); setEditingBudget(false); }}>✓</button>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12.5, fontWeight: 700, cursor: "pointer" }} onClick={() => { setBudgetDraft(annualBudget); setEditingBudget(true); }} title="Click to edit">
+                        {fmtMVR(annualBudget)} <Pencil size={11} style={{ opacity: 0.5, verticalAlign: "middle" }} />
+                      </div>
+                    )}
+                  </div>
+                  {ringSegments.map(s => (
+                    <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                      <div style={{ width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }} />
+                      <div style={{ flex: 1, fontSize: 12.5, color: "var(--text-dim)" }}>{s.label}</div>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: s.label === "Balance" && overage > 0 ? "var(--signal-crit)" : undefined }}>{fmtMVR(s.label === "Balance" ? balance : s.n)}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-faint)", width: 34, textAlign: "right" }}>{pct(s.n)}%</div>
+                    </div>
+                  ))}
+                  {overage > 0 && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                      <div style={{ width: 10, height: 10, borderRadius: 3, background: "var(--signal-crit)", flexShrink: 0 }} />
+                      <div style={{ flex: 1, fontSize: 12.5, color: "var(--text-dim)" }}>Over Budget</div>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--signal-crit)" }}>{fmtMVR(overage)}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-faint)", width: 34, textAlign: "right" }}></div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        <PortfolioHealthCard counts={healthCounts} />
       </div>
 
-      <PortfolioHealthCard counts={healthCounts} />
+      {/* Monthly Commitments — sponsorships committed per month, toggle between count and value */}
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-head"><div className="panel-title"><CalendarIcon size={13} /> Monthly Sponsorship Commitments</div>
+          <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+            <div className={`filter-chip ${monthlyView === "value" ? "active" : ""}`} onClick={() => setMonthlyView("value")}>By Value</div>
+            <div className={`filter-chip ${monthlyView === "count" ? "active" : ""}`} onClick={() => setMonthlyView("count")}>By Count</div>
+          </div>
+        </div>
+        <div className="panel-body pad">
+          {monthlyStats.length === 0 && <div className="panel-empty">No sponsorships to summarize yet.</div>}
+          {monthlyStats.map(m => {
+            const barPct = monthlyView === "value"
+              ? Math.round((m.value / maxMonthlyValue) * 100)
+              : Math.round((m.count / maxMonthlyCount) * 100);
+            return (
+              <div key={m.key} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <div style={{ width: 70, fontSize: 11.5, color: "var(--text-dim)", flexShrink: 0 }}>{m.label}</div>
+                <div style={{ flex: 1, height: 18, background: "var(--panel-2)", borderRadius: 5, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.max(4, barPct)}%`, height: "100%", background: monthlyView === "value" ? "var(--brand)" : "var(--signal-info)" }} />
+                </div>
+                <div style={{ width: 130, fontSize: 11.5, textAlign: "right", flexShrink: 0 }}>
+                  {monthlyView === "value" ? fmtMVR(m.value) : `${m.count} sponsorship${m.count === 1 ? "" : "s"}`}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
 
-      {/* Needs Attention — health + follow-ups combined, one line per project, expandable for detail */}
+      {/* Pipeline Overview — count of sponsorships at each stage of the funnel */}
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-head"><div className="panel-title"><ListChecks size={13} /> Pipeline Overview</div>
+          <div className="panel-title-count">{sponsorships.length} total on file</div></div>
+        <div className="panel-body pad" style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 10 }}>
+          {pipelineStats.map(p => {
+            const colorMap = { warn: "var(--signal-warn)", info: "var(--signal-info)", crit: "var(--signal-crit)", ok: "var(--signal-ok)" };
+            return (
+              <div key={p.label} style={{ background: "var(--panel-2)", borderRadius: 10, padding: "12px 10px", textAlign: "center" }}>
+                <div className="stat-num disp" style={{ fontSize: 22, color: colorMap[p.color] }}>{p.num}</div>
+                <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 2 }}>{p.label}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="cc-group-label">Needs Attention</div>
+      {/* Needs Attention — quick stats up top, then health + follow-ups combined, one line per project, expandable for detail */}
       <div className="panel" style={{ marginBottom: 16 }}>
         <div className="panel-head"><div className="panel-title"><Bell size={13} /> Needs Attention</div>
           <div className="panel-title-count">{flaggedCount} flagged · {onTrackCount} on track{ackedFollowUps.length > 0 ? ` · ${ackedFollowUps.length} acknowledged` : ""}</div></div>
+        <div className="panel-body pad" style={{ paddingBottom: 12, borderBottom: "1px solid var(--line-soft)" }}>
+          <div className="grid stat-row" style={{ marginBottom: 0 }}>
+            <StatCard compact label="Critical Items" num={overdueCount} icon={<AlertTriangle size={14} />} color="crit" hot={overdueCount > 0} />
+            <StatCard compact label="Events (Next 21 Days)" num={upcomingEvents.length} icon={<CalendarIcon size={14} />} color="info" />
+            <StatCard compact label="Pending Payments" num={pendingPaymentsCount} icon={<CreditCard size={14} />} color="warn" />
+            <StatCard compact label="Deliverables Overdue" num={deliverablesOverdueCount} icon={<ListChecks size={14} />} color="crit" hot={deliverablesOverdueCount > 0} />
+          </div>
+        </div>
         <div className="panel-body">
           {grouped.length === 0 && <div className="panel-empty">Nothing needs attention right now — {onTrackCount} sponsorships on track.</div>}
           {grouped.map(g => {
@@ -1138,6 +1228,46 @@ function DashboardView(props) {
         </div>
       </div>
 
+      {/* Deliverables Monitor — dedicated, distinguishable home for sponsor-side vs partner-side deliverable tracking */}
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-head"><div className="panel-title"><ListChecks size={13} /> Deliverables Monitor</div>
+          <div className="panel-title-count">{deliverablesMonitor.rows.length} sponsorship{deliverablesMonitor.rows.length === 1 ? "" : "s"} with open items</div></div>
+        <div className="panel-body pad">
+          <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+            {[
+              { label: "Our Deliverables", accent: "var(--signal-info)", done: deliverablesMonitor.sponsorDone, total: deliverablesMonitor.sponsorTotal, overdue: deliverablesMonitor.sponsorOverdue },
+              { label: "Partner Deliverables", accent: "var(--brand)", done: deliverablesMonitor.partnerDone, total: deliverablesMonitor.partnerTotal, overdue: deliverablesMonitor.partnerOverdue },
+            ].map(c => {
+              const pct = c.total ? Math.round((c.done / c.total) * 100) : 0;
+              return (
+                <div key={c.label} style={{ flex: "1 1 220px", minWidth: 200, background: "var(--panel-2)", borderRadius: 10, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 700, color: c.accent }}>{c.label}</span>
+                    {c.overdue > 0 && <span className="badge crit">{c.overdue} overdue</span>}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>{c.done}/{c.total} complete</span><span>{pct}%</span></div>
+                  <div style={{ height: 6, background: "var(--panel)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: pct === 100 ? "var(--signal-ok)" : c.accent }} /></div>
+                </div>
+              );
+            })}
+          </div>
+
+          {deliverablesMonitor.rows.length === 0 && <div className="panel-empty">No open deliverables across the active portfolio.</div>}
+          {deliverablesMonitor.rows.map(r => (
+            <div className="row" key={r.sp.id} style={{ alignItems: "center" }} onClick={() => openDetail(r.sp.id, r.sOver >= r.pOver ? "sponsorDeliverables" : "partnerDeliverables")}>
+              <div style={{ flex: 1 }}>
+                <div className="row-title">{r.sp.eventName}</div>
+                <div className="row-sub">{r.sp.organizer}</div>
+              </div>
+              <span className={`badge ${r.sOver > 0 ? "crit" : "info"}`} style={{ cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); openDetail(r.sp.id, "sponsorDeliverables"); }}>Ours {r.sDone}/{r.sd.length}</span>
+              <span className={`badge ${r.pOver > 0 ? "crit" : "brand"}`} style={{ cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); openDetail(r.sp.id, "partnerDeliverables"); }}>Partner {r.pDone}/{r.pd.length}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="cc-group-label">Operational Queues</div>
+      {/* Operational lists — memo approval queue and the near-term event calendar */}
       <div className="grid two-col">
         <div className="panel">
           <div className="panel-head"><div className="panel-title"><ListChecks size={13} /> Memo Approval Pipeline</div>
@@ -1165,53 +1295,14 @@ function DashboardView(props) {
             {upcomingEvents.length === 0 && <div className="panel-empty">No events in the next 21 days.</div>}
             {upcomingEvents.map(s => (
               <div className="row" key={s.id} onClick={() => openDetail(s.id)}>
-                <div style={{ flex: 1 }}><div className="row-title">{s.eventName}</div><div className="row-sub">{fmtDate(s.eventDate)} · {s.region}</div></div>
+                <div style={{ flex: 1 }}><div className="row-title">{s.eventName}</div><div className="row-sub">{fmtDateRange(s.eventDate, s.eventEndDate)} · {s.region}</div></div>
                 <span className={`badge ${daysBetween(s.eventDate, TODAY) <= 5 ? "crit" : "info"}`}>{daysBetween(s.eventDate, TODAY)}d</span>
               </div>
             ))}
           </div>
         </div>
       </div>
-
-      <DeliverablesDuePanel sponsorships={sponsorships} openDetail={openDetail} />
     </>
-  );
-}
-
-function DeliverablesDuePanel({ sponsorships, openDetail }) {
-  const active = sponsorships.filter(s => !["Archived", "Rejected"].includes(s.stage));
-  const buckets = { Sponsor: [], Partner: [] };
-  active.forEach(s => {
-    (s.deliverables || []).forEach(dl => {
-      if (dl.status === "Done") return;
-      const cat = dl.category || "Sponsor";
-      buckets[cat].push({ ...dl, spId: s.id, eventName: s.eventName, overdue: daysBetween(TODAY, dl.dueDate) > 0 });
-    });
-  });
-  Object.keys(buckets).forEach(k => buckets[k].sort((a, b) => a.dueDate - b.dueDate));
-
-  return (
-    <div className="grid two-col" style={{ marginBottom: 0 }}>
-      {["Sponsor", "Partner"].map(cat => (
-        <div className="panel" key={cat}>
-          <div className="panel-head"><div className="panel-title"><ListChecks size={13} /> {cat} Deliverables Due</div>
-            <div className="panel-title-count">{buckets[cat].length} pending</div></div>
-          <div className="panel-body">
-            {buckets[cat].length === 0 && <div className="panel-empty">Nothing pending.</div>}
-            {buckets[cat].slice(0, 8).map(dl => (
-              <div className="row" key={dl.id} onClick={() => openDetail(dl.spId, "deliverables")}>
-                <div style={{ flex: 1 }}>
-                  <div className="row-title">{dl.name}</div>
-                  <div className="row-sub">{dl.eventName} · Due {fmtDate(dl.dueDate)}</div>
-                </div>
-                <span className={`badge ${dl.overdue ? "crit" : "warn"}`}>{dl.overdue ? "Overdue" : dl.status}</span>
-              </div>
-            ))}
-            {buckets[cat].length > 8 && <div className="row-sub" style={{ padding: "6px 10px" }}>+{buckets[cat].length - 8} more</div>}
-          </div>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -1246,7 +1337,7 @@ function PortfolioHealthCard({ counts }) {
   ];
 
   return (
-    <div className="panel" style={{ marginBottom: 16 }}>
+    <div className="panel">
       <div className="panel-head"><div className="panel-title"><TrendingUp size={13} /> Portfolio Health</div>
         <div className="panel-title-count">{total} active sponsorship{total === 1 ? "" : "s"}</div></div>
       <div className="panel-body pad" style={{ display: "flex", alignItems: "center", gap: 28, flexWrap: "wrap" }}>
@@ -1275,9 +1366,63 @@ function PortfolioHealthCard({ counts }) {
   );
 }
 
-function StatCard({ label, num, icon, color, hot }) {
+// Click-to-edit-in-place field: renders as plain text/value until clicked, then swaps to an input.
+// `value` is always the raw string/number used as the input's value; `format` (optional) transforms
+// that same value for display. Text/number/textarea commit on blur or Enter, Escape cancels;
+// select commits immediately on choice since picking an option is already a deliberate action.
+function InlineEditField({ value, onSave, type = "text", options, list, placeholder, format, displayClassName, displayStyle, inputStyle, textarea }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? "");
+
+  function startEdit() { setDraft(value ?? ""); setEditing(true); }
+  function commit(v) { onSave(v !== undefined ? v : draft); setEditing(false); }
+
+  if (editing) {
+    if (type === "select") {
+      return (
+        <select className="form-select" autoFocus style={inputStyle} value={draft}
+          onChange={e => commit(e.target.value)} onBlur={() => setEditing(false)}>
+          {options.map(o => <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>)}
+        </select>
+      );
+    }
+    if (textarea) {
+      return (
+        <textarea className="form-textarea" autoFocus style={inputStyle} value={draft} placeholder={placeholder}
+          onChange={e => setDraft(e.target.value)} onBlur={() => commit()}
+          onKeyDown={e => { if (e.key === "Escape") setEditing(false); }} />
+      );
+    }
+    return (
+      <input className="form-input" autoFocus type={type} style={inputStyle} value={draft} placeholder={placeholder} list={list}
+        onChange={e => setDraft(e.target.value)} onBlur={() => commit()}
+        onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }} />
+    );
+  }
+
+  const shown = format ? format(value) : value;
+  return (
+    <div className={`inline-edit ${displayClassName || ""}`} style={displayStyle} onClick={startEdit} title="Click to edit">
+      {shown != null && shown !== "" ? shown : <span className="inline-edit-empty">{placeholder || "— click to add —"}</span>}
+      <Pencil size={10} className="inline-pencil" />
+    </div>
+  );
+}
+
+function StatCard({ label, num, icon, color, hot, compact }) {
   const colorMap = { warn: "var(--signal-warn)", info: "var(--signal-info)", crit: "var(--signal-crit)", ok: "var(--signal-ok)" };
   const softMap = { warn: "var(--signal-warn-soft)", info: "var(--signal-info-soft)", crit: "var(--signal-crit-soft)", ok: "var(--signal-ok-soft)" };
+  if (compact) {
+    return (
+      <div className={`stat-card compact ${hot ? "hot" : ""}`}>
+        <div className="stat-icon" style={{ background: softMap[color], color: colorMap[color] }}>{icon}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="stat-num disp">{num}</div>
+          <div className="stat-label">{label}</div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={`stat-card ${hot ? "hot" : ""}`}>
       <div className="stat-top"><div className="stat-label">{label}</div><div className="stat-icon" style={{ background: softMap[color], color: colorMap[color] }}>{icon}</div></div>
@@ -1307,7 +1452,7 @@ function PipelineView({ sponsorships, stageFilter, setStageFilter, openDetail })
               <div className="row-title">{s.eventName}</div>
               <div className="row-sub">{s.organizer}</div>
               <div className="mono" style={{ fontSize: 12 }}>{s.valueType === "In-Kind" ? <span className="badge neutral">In-Kind</span> : fmtMVR(s.sponsorAmount)}</div>
-              <div style={{ fontSize: 11.5, color: "var(--text-dim)" }}>{fmtDate(s.eventDate)}</div>
+              <div style={{ fontSize: 11.5, color: "var(--text-dim)" }}>{fmtDateRange(s.eventDate, s.eventEndDate)}</div>
               <div><span className={`badge ${stageBadgeClass(s.stage)}`}>{s.stage}</span></div>
             </div>
           );
@@ -1322,8 +1467,12 @@ function SponsorshipProfilesView({ sponsorships, openDetail }) {
   return (
     <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
       {sponsorships.map(s => {
-        const sponsorItems = s.deliverables.filter(dl => (dl.category || "Sponsor") === "Sponsor");
-        const partnerItems = s.deliverables.filter(dl => dl.category === "Partner");
+        const sponsorDone = (s.sponsorDeliverables || []).filter(dl => dl.status === "Done").length;
+        const sponsorTotal = (s.sponsorDeliverables || []).length;
+        const sponsorPct = sponsorTotal ? Math.round((sponsorDone / sponsorTotal) * 100) : 0;
+        const partnerDone = (s.partnerDeliverables || []).filter(dl => dl.status === "Done").length;
+        const partnerTotal = (s.partnerDeliverables || []).length;
+        const partnerPct = partnerTotal ? Math.round((partnerDone / partnerTotal) * 100) : 0;
         const followUps = generateFollowUps(s);
         const h = computeHealth(s);
         const daysToEvent = daysBetween(s.eventDate, TODAY);
@@ -1342,26 +1491,32 @@ function SponsorshipProfilesView({ sponsorships, openDetail }) {
             <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
               <span className={`badge ${stageBadgeClass(s.stage)}`}>{s.stage}</span>
               {s.valueType !== "Cash" && <span className="badge neutral">{s.valueType}</span>}
-              {(s.connectivity || []).length > 0 && <span className="badge neutral">Connectivity</span>}
+              {(s.sponsorDeliverables || []).some(x => x.connectivityType) && <span className="badge neutral">Connectivity</span>}
+              {spanLabel(s.eventDate, s.eventEndDate) && <span className="badge info">{spanLabel(s.eventDate, s.eventEndDate)}</span>}
             </div>
             <div style={{ display: "flex", gap: 20, marginBottom: 12 }}>
               <div className="org-stat"><div className="num mono">{s.valueType === "In-Kind" ? "In-Kind" : fmtMVR(s.sponsorAmount)}</div><div className="lbl">Value</div></div>
-              <div className="org-stat"><div className="num">{daysToEvent >= 0 ? `${daysToEvent}d` : "Past"}</div><div className="lbl">{daysToEvent >= 0 ? "To Event" : "Event Date"}</div></div>
+              <div className="org-stat" title={fmtDateRange(s.eventDate, s.eventEndDate)}><div className="num">{daysToEvent >= 0 ? `${daysToEvent}d` : "Past"}</div><div className="lbl">{daysToEvent >= 0 ? "To Event" : "Event Date"}</div></div>
             </div>
-            {[{ label: "Sponsor Deliverables", items: sponsorItems }, { label: "Partner Deliverables", items: partnerItems }].map(({ label, items }) => {
-              if (items.length === 0) return null;
-              const doneN = items.filter(dl => dl.status === "Done").length;
-              const pct = Math.round((doneN / items.length) * 100);
-              return (
-                <div key={label} style={{ marginBottom: 8 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>{label}</span><span>{doneN}/{items.length}</span></div>
-                  <div style={{ height: 6, background: "var(--panel-2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: pct === 100 ? "var(--signal-ok)" : "var(--brand)" }} /></div>
-                </div>
-              );
-            })}
+            {(sponsorTotal > 0 || partnerTotal > 0) && (
+              <div style={{ marginBottom: 10, display: "flex", flexDirection: "column", gap: 7 }}>
+                {sponsorTotal > 0 && (
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>Our Deliverables</span><span>{sponsorDone}/{sponsorTotal}</span></div>
+                    <div style={{ height: 6, background: "var(--panel-2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${sponsorPct}%`, height: "100%", background: sponsorPct === 100 ? "var(--signal-ok)" : "var(--signal-info)" }} /></div>
+                  </div>
+                )}
+                {partnerTotal > 0 && (
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>Partner Deliverables</span><span>{partnerDone}/{partnerTotal}</span></div>
+                    <div style={{ height: 6, background: "var(--panel-2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${partnerPct}%`, height: "100%", background: partnerPct === 100 ? "var(--signal-ok)" : "var(--brand)" }} /></div>
+                  </div>
+                )}
+              </div>
+            )}
             {followUps.length > 0 ? (
-              <div className="row-sub" style={{ lineHeight: 1.5, marginTop: 4 }}>{followUps[0].text} <span style={{ color: "var(--text-faint)" }}>(owner: {followUps[0].owner})</span>{followUps.length > 1 ? ` +${followUps.length - 1} more` : ""}</div>
-            ) : <div className="row-sub" style={{ marginTop: 4 }}>No open follow-ups.</div>}
+              <div className="row-sub" style={{ lineHeight: 1.5 }}>{followUps[0].text} <span style={{ color: "var(--text-faint)" }}>(owner: {followUps[0].owner})</span>{followUps.length > 1 ? ` +${followUps.length - 1} more` : ""}</div>
+            ) : <div className="row-sub">No open follow-ups.</div>}
           </div>
         );
       })}
@@ -1373,23 +1528,42 @@ function SponsorshipProfilesView({ sponsorships, openDetail }) {
 function buildCalendarEvents(sponsorships) {
   const events = [];
   sponsorships.forEach(s => {
-    events.push({ date: s.eventDate, type: "Event", label: s.eventName, sub: s.region, sp: s });
-    if (s.payment?.payment?.dueDate) events.push({ date: s.payment.payment.dueDate, type: "Payment", label: `Payment due — ${s.eventName}`, sub: fmtMVR(s.sponsorAmount), sp: s });
-    (s.connectivity || []).forEach(c => {
-      if (c.setupDate) events.push({ date: c.setupDate, type: "Connectivity", label: `${c.type} setup — ${s.eventName}`, sub: c.type, sp: s });
-      if (c.deviceReturnDate) events.push({ date: c.deviceReturnDate, type: "Device Return", label: `${c.type} return — ${s.eventName}`, sub: c.type, sp: s });
+    events.push({ date: s.eventDate, endDate: s.eventEndDate || null, type: "Event", label: `${s.eventName}${spanLabel(s.eventDate, s.eventEndDate) ? ` (${fmtDateRange(s.eventDate, s.eventEndDate)})` : ""}`, sub: s.region, sp: s, tab: "overview" });
+    if (s.payment?.payment?.dueDate) events.push({ date: s.payment.payment.dueDate, type: "Payment", label: `Payment due — ${s.eventName}`, sub: fmtMVR(s.sponsorAmount), sp: s, tab: "payment" });
+    // Deliverable due dates — kept separate by category so it's clear at a glance whose commitment it is.
+    // Connectivity items live inside Sponsor Deliverables; their device-return date (if any) gets its own calendar entry.
+    (s.sponsorDeliverables || []).forEach(dl => {
+      if (dl.status !== "Done") {
+        events.push({ date: dl.dueDate, type: "Sponsor Deliverable", label: `${dl.name} — ${s.eventName}`, sub: `Ooredoo${dl.department ? ` · ${dl.department}` : ""} · ${dl.status}`, sp: s, tab: "sponsorDeliverables" });
+      }
+      if (dl.deviceReturnDate && dl.deviceReturnStatus !== "Returned") {
+        events.push({ date: dl.deviceReturnDate, type: "Device Return", label: `${dl.connectivityType || dl.name} return — ${s.eventName}`, sub: dl.connectivityType || dl.name, sp: s, tab: "sponsorDeliverables" });
+      }
+    });
+    (s.partnerDeliverables || []).forEach(dl => {
+      if (dl.status === "Done") return;
+      events.push({ date: dl.dueDate, type: "Partner Deliverable", label: `${dl.name} — ${s.eventName}`, sub: `${s.organizer} · ${dl.status}`, sp: s, tab: "partnerDeliverables" });
     });
   });
   return events;
 }
-const CAL_TYPE_COLOR = { Event: "info", Payment: "warn", Connectivity: "neutral", "Device Return": "crit" };
-const CAL_TYPE_DOT = { Event: "var(--signal-info)", Payment: "var(--signal-warn)", Connectivity: "var(--signal-neutral)", "Device Return": "var(--signal-crit)" };
+const CAL_TYPE_COLOR = { Event: "info", Payment: "warn", "Device Return": "crit", "Sponsor Deliverable": "info", "Partner Deliverable": "brand" };
+const CAL_TYPE_DOT = { Event: "var(--signal-info)", Payment: "var(--signal-warn)", "Device Return": "var(--signal-crit)", "Sponsor Deliverable": "var(--signal-info)", "Partner Deliverable": "var(--brand)" };
+
+const ALL_CAL_TYPES = ["Event", "Payment", "Sponsor Deliverable", "Partner Deliverable", "Device Return"];
+
 
 function CalendarView({ sponsorships, openDetail }) {
   const [mode, setMode] = useState("agenda"); // "agenda" | "month"
   const [monthCursor, setMonthCursor] = useState(new Date(TODAY.getFullYear(), TODAY.getMonth(), 1));
   const [selectedDay, setSelectedDay] = useState(null);
-  const events = useMemo(() => buildCalendarEvents(sponsorships), [sponsorships]);
+  const [activeTypes, setActiveTypes] = useState(ALL_CAL_TYPES);
+  const allEvents = useMemo(() => buildCalendarEvents(sponsorships), [sponsorships]);
+  const events = useMemo(() => allEvents.filter(e => activeTypes.includes(e.type)), [allEvents, activeTypes]);
+
+  function toggleType(t) {
+    setActiveTypes(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t]);
+  }
 
   const grouped = useMemo(() => {
     const upcoming = events.filter(e => daysBetween(e.date, TODAY) >= -3).sort((a, b) => a.date - b.date);
@@ -1408,6 +1582,13 @@ function CalendarView({ sponsorships, openDetail }) {
       <div className="list-view-toolbar">
         <div className={`filter-chip ${mode === "agenda" ? "active" : ""}`} onClick={() => setMode("agenda")}>Agenda</div>
         <div className={`filter-chip ${mode === "month" ? "active" : ""}`} onClick={() => setMode("month")}>Month</div>
+        <div style={{ width: 1, alignSelf: "stretch", background: "var(--line-soft)", margin: "0 4px" }} />
+        {ALL_CAL_TYPES.map(t => (
+          <div key={t} className={`filter-chip ${activeTypes.includes(t) ? "active" : ""}`} onClick={() => toggleType(t)}
+            style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: CAL_TYPE_DOT[t], flexShrink: 0 }} />{t}
+          </div>
+        ))}
       </div>
       {mode === "agenda" ? (
         <div className="panel">
@@ -1423,7 +1604,7 @@ function CalendarView({ sponsorships, openDetail }) {
                 </div>
                 <div className="agenda-items">
                   {g.items.map((it, i) => (
-                    <div className="agenda-event" key={i} onClick={() => openDetail(it.sp.id)}>
+                    <div className="agenda-event" key={i} onClick={() => openDetail(it.sp.id, it.tab)}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
                         <span className={`badge ${CAL_TYPE_COLOR[it.type]}`}>{it.type}</span>
                         {daysBetween(g.date, TODAY) < 0 && <span className="badge crit">Past due</span>}
@@ -1457,9 +1638,22 @@ function MonthCalendar({ events, monthCursor, setMonthCursor, selectedDay, setSe
 
   const eventsByDay = {};
   events.forEach(e => {
-    const key = e.date.toDateString();
-    if (!eventsByDay[key]) eventsByDay[key] = [];
-    eventsByDay[key].push(e);
+    const startKey = e.date.toDateString();
+    if (!eventsByDay[startKey]) eventsByDay[startKey] = [];
+    eventsByDay[startKey].push(e);
+    if (e.endDate && e.endDate > e.date) {
+      // multi-day/long-running sponsorship — also mark every day it spans so the month grid shows it's ongoing
+      let d = new Date(e.date.getFullYear(), e.date.getMonth(), e.date.getDate() + 1);
+      const end = new Date(e.endDate.getFullYear(), e.endDate.getMonth(), e.endDate.getDate());
+      let guard = 0;
+      while (d <= end && guard < 730) {
+        const k = d.toDateString();
+        if (!eventsByDay[k]) eventsByDay[k] = [];
+        eventsByDay[k].push({ ...e, label: `${e.sp.eventName} (ongoing)`, ongoing: true });
+        d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+        guard++;
+      }
+    }
   });
 
   const selectedItems = selectedDay ? (eventsByDay[selectedDay] || []) : [];
@@ -1507,7 +1701,7 @@ function MonthCalendar({ events, monthCursor, setMonthCursor, selectedDay, setSe
           <div style={{ marginTop: 16, borderTop: "1px solid var(--line-soft)", paddingTop: 12 }}>
             <div className="section-label" style={{ margin: "0 0 8px 0" }}>{new Date(selectedDay).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</div>
             {selectedItems.map((it, i) => (
-              <div className="agenda-event" key={i} onClick={() => openDetail(it.sp.id)}>
+              <div className="agenda-event" key={i} onClick={() => openDetail(it.sp.id, it.tab)}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
                   <span className={`badge ${CAL_TYPE_COLOR[it.type]}`}>{it.type}</span>
                   {daysBetween(new Date(selectedDay), TODAY) < 0 && <span className="badge crit">Past due</span>}
@@ -1525,10 +1719,33 @@ function MonthCalendar({ events, monthCursor, setMonthCursor, selectedDay, setSe
 
 
 /* ============================== NEW REQUEST FORM ============================== */
-function NewRequestForm({ onCreate, close }) {
-  const [form, setForm] = useState({ eventName: "", organizer: "", eventType: "", region: "", valueType: "Cash", sponsorAmount: "", inKindDetails: "", sponsorshipType: "", eventDate: "", background: "" });
+function NewRequestForm({ onCreate, close, sponsorships }) {
+  const [form, setForm] = useState({ eventName: "", organizer: "", eventType: "", region: "", valueType: "Cash", sponsorAmount: "", inKindDetails: "", sponsorshipType: "", eventDate: "", eventEndDate: "", background: "" });
+  const [prefilled, setPrefilled] = useState(false);
   const set = (k) => (e) => setForm(prev => ({ ...prev, [k]: e.target.value }));
   const canSubmit = form.eventName.trim() && form.organizer.trim();
+
+  const organizers = useMemo(() => distinctValues(sponsorships, "organizer"), [sponsorships]);
+  const regions = useMemo(() => distinctValues(sponsorships, "region"), [sponsorships]);
+  const eventTypes = useMemo(() => distinctValues(sponsorships, "eventType"), [sponsorships]);
+  const sponsorshipTypes = useMemo(() => distinctValues(sponsorships, "sponsorshipType"), [sponsorships]);
+
+  // When the typed organizer matches someone we've sponsored before, offer to carry their last
+  // region/type/value forward — saves re-entering the same details for a repeat organizer.
+  function handleOrganizerBlur() {
+    if (!form.organizer.trim()) return;
+    const last = lastSponsorshipFor(sponsorships, form.organizer);
+    if (!last) return;
+    setForm(prev => ({
+      ...prev,
+      eventType: prev.eventType || last.eventType,
+      region: prev.region || last.region,
+      sponsorshipType: prev.sponsorshipType || last.sponsorshipType,
+    }));
+    setPrefilled(true);
+  }
+  function submit() { if (canSubmit) onCreate(form); }
+  function onEnter(e) { if (e.key === "Enter") { e.preventDefault(); submit(); } }
 
   return (
     <>
@@ -1541,11 +1758,20 @@ function NewRequestForm({ onCreate, close }) {
         <div className="row-sub" style={{ marginTop: 3 }}>Logs the request at "New Request" stage. You can fill in the rest — memo, budget code, deliverables — once it's created.</div>
       </div>
       <div className="detail-body">
-        <div className="form-row"><div className="kv-label">Event Name *</div><input className="form-input" value={form.eventName} onChange={set("eventName")} placeholder="e.g. Inter-School Chess Championship" /></div>
-        <div className="form-row"><div className="kv-label">Organizer *</div><input className="form-input" value={form.organizer} onChange={set("organizer")} placeholder="e.g. Maldives Chess Association" /></div>
+        <datalist id="dl-organizers">{organizers.map(o => <option key={o} value={o} />)}</datalist>
+        <datalist id="dl-regions">{regions.map(r => <option key={r} value={r} />)}</datalist>
+        <datalist id="dl-eventtypes">{eventTypes.map(t => <option key={t} value={t} />)}</datalist>
+        <datalist id="dl-sponsorshiptypes">{sponsorshipTypes.map(t => <option key={t} value={t} />)}</datalist>
+
+        <div className="form-row"><div className="kv-label">Event Name *</div><input className="form-input" value={form.eventName} onChange={set("eventName")} onKeyDown={onEnter} placeholder="e.g. Inter-School Chess Championship" /></div>
+        <div className="form-row">
+          <div className="kv-label">Organizer *</div>
+          <input className="form-input" list="dl-organizers" value={form.organizer} onChange={set("organizer")} onBlur={handleOrganizerBlur} onKeyDown={onEnter} placeholder="e.g. Maldives Chess Association" />
+          {prefilled && <div style={{ fontSize: 10.5, color: "var(--signal-info)", marginTop: 4 }}>Prefilled region/type from their last sponsorship with us — adjust anything below if needed.</div>}
+        </div>
         <div className="form-row-2">
-          <div><div className="kv-label">Event Type</div><input className="form-input" value={form.eventType} onChange={set("eventType")} placeholder="Sports / CSR / Regional…" /></div>
-          <div><div className="kv-label">Region</div><input className="form-input" value={form.region} onChange={set("region")} placeholder="Malé, Addu City…" /></div>
+          <div><div className="kv-label">Event Type</div><input className="form-input" list="dl-eventtypes" value={form.eventType} onChange={set("eventType")} onKeyDown={onEnter} placeholder="Sports / CSR / Regional…" /></div>
+          <div><div className="kv-label">Region</div><input className="form-input" list="dl-regions" value={form.region} onChange={set("region")} onKeyDown={onEnter} placeholder="Malé, Addu City…" /></div>
         </div>
         <div className="form-row">
           <div className="kv-label">Sponsorship Value</div>
@@ -1556,15 +1782,20 @@ function NewRequestForm({ onCreate, close }) {
           </select>
         </div>
         {form.valueType !== "In-Kind" && (
-          <div className="form-row"><div className="kv-label">Sponsor Amount (MVR)</div><input type="number" className="form-input" value={form.sponsorAmount} onChange={set("sponsorAmount")} placeholder="0" /></div>
+          <div className="form-row"><div className="kv-label">Sponsor Amount (MVR)</div><input type="number" className="form-input" value={form.sponsorAmount} onChange={set("sponsorAmount")} onKeyDown={onEnter} placeholder="0" /></div>
         )}
         {form.valueType !== "Cash" && (
           <div className="form-row"><div className="kv-label">In-Kind Details</div><textarea className="form-textarea" value={form.inKindDetails} onChange={set("inKindDetails")} placeholder="e.g. AirFibre connectivity for the event, on-site technical support, exposure package…" /></div>
         )}
-        <div className="form-row"><div className="kv-label">Sponsorship Type</div><input className="form-input" value={form.sponsorshipType} onChange={set("sponsorshipType")} placeholder="Cash / Connectivity / Combination…" /></div>
+        <div className="form-row"><div className="kv-label">Sponsorship Type</div><input className="form-input" list="dl-sponsorshiptypes" value={form.sponsorshipType} onChange={set("sponsorshipType")} onKeyDown={onEnter} placeholder="Cash / Connectivity / Combination…" /></div>
         <div className="form-row"><div className="kv-label">Event Date</div><input type="date" className="form-input" value={form.eventDate} onChange={set("eventDate")} /></div>
+        <div className="form-row">
+          <div className="kv-label">Event End Date (optional)</div>
+          <input type="date" className="form-input" value={form.eventEndDate} onChange={set("eventEndDate")} min={form.eventDate || undefined} />
+          <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 4 }}>Leave blank for a single-day event. Set this for multi-day events or long-running sponsorships (e.g. a 1-year partnership).</div>
+        </div>
         <div className="form-row"><div className="kv-label">Background</div><textarea className="form-textarea" value={form.background} onChange={set("background")} placeholder="What is this event, briefly?" /></div>
-        <button className="btn primary" disabled={!canSubmit} onClick={() => canSubmit && onCreate(form)}>Create Request</button>
+        <button className="btn primary" disabled={!canSubmit} onClick={submit}>Create Request</button>
       </div>
     </>
   );
@@ -1575,10 +1806,9 @@ const THRESHOLD_FIELDS = [
   { key: "approvalWarnDays", label: "Flag a stalled approval step after (days)", group: "Approvals" },
   { key: "approvalUrgentDays", label: "Escalate to Urgent after (days)", group: "Approvals" },
   { key: "approvalCriticalDays", label: "Escalate to Critical after (days)", group: "Approvals" },
-  { key: "connectivityWindowDays", label: "Start warning about setup this many days before the event", group: "Connectivity" },
-  { key: "connectivityCriticalDays", label: "Escalate setup warning to Critical inside (days)", group: "Connectivity" },
+  { key: "connectivityWindowDays", label: "Start warning about setup this many days before the event", group: "Connectivity (Sponsor Deliverables)" },
+  { key: "connectivityCriticalDays", label: "Escalate setup warning to Critical inside (days)", group: "Connectivity (Sponsor Deliverables)" },
   { key: "eventApprovalWindowDays", label: "Flag unapproved requests once event is within (days)", group: "Deadlines" },
-  { key: "intakeStallDays", label: "Escalate a stalled information request after (days)", group: "Intake" },
 ];
 
 function SettingsPanel({ thresholds, setThresholds, close, saveError }) {
@@ -1613,141 +1843,78 @@ function SettingsPanel({ thresholds, setThresholds, close, saveError }) {
 }
 
 /* ============================== DETAIL PANEL ============================== */
-/* ============================== DELIVERABLES TAB (Sponsor vs Partner) ============================== */
-function DeliverableSection({ title, hint, items, category, editMode, cycleDeliverable, editDeliverable, removeDeliverable, addDeliverable, spId }) {
-  const [newDl, setNewDl] = useState({ name: "", owner: "", dueDate: "" });
-  const done = items.filter(dl => dl.status === "Done").length;
-  return (
-    <div style={{ marginBottom: 22 }}>
-      <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 4px 0" }}>
-        <span>{title}</span>
-        {items.length > 0 && <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>{done}/{items.length}</span>}
-      </div>
-      <div style={{ fontSize: 11, color: "var(--text-faint)", marginBottom: 8 }}>{hint}</div>
-      {items.length === 0 && <div className="panel-empty">Nothing added yet.</div>}
-      {items.map(dl => {
-        const overdue = dl.status !== "Done" && daysBetween(TODAY, dl.dueDate) > 0;
-        return (
-          <div className="check-row" key={dl.id} style={overdue ? { background: "var(--signal-crit-soft)", borderRadius: 8 } : undefined}>
-            <div className={`check-box ${dl.status === "Done" ? "done" : dl.status === "In Progress" ? "progress" : ""}`} onClick={() => cycleDeliverable(spId, dl.id)}>
-              {dl.status === "Done" && <CheckCircle2 size={11} color="#0d1a14" />}
-              {dl.status === "In Progress" && <Circle size={7} color="var(--signal-warn)" fill="var(--signal-warn)" />}
-            </div>
-            <div style={{ flex: 1 }}>
-              {editMode ? (
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
-                  <input className="form-input" style={{ width: 160 }} value={dl.name} onChange={e => editDeliverable(spId, dl.id, { name: e.target.value })} />
-                  <input className="form-input" style={{ width: 100 }} value={dl.owner} onChange={e => editDeliverable(spId, dl.id, { owner: e.target.value })} placeholder="Owner" />
-                  <input type="date" className="form-input" style={{ width: 140 }} value={dstr(dl.dueDate)} onChange={e => editDeliverable(spId, dl.id, { dueDate: parseDateInput(e.target.value) || dl.dueDate })} />
-                </div>
-              ) : (
-                <>
-                  <div className={`check-label ${dl.status === "Done" ? "done" : ""}`}>{dl.name}</div>
-                  <div className="check-meta">Owner: {dl.owner} · Due {fmtDate(dl.dueDate)} {dl.evidence && `· Evidence: ${dl.evidence}`}{dl.notes && ` · ${dl.notes}`}</div>
-                </>
-              )}
-            </div>
-            <span className={`badge ${overdue ? "crit" : dl.status === "Done" ? "ok" : dl.status === "In Progress" ? "warn" : "neutral"}`}>{overdue ? "Overdue" : dl.status}</span>
-            <X size={14} className="del-x" onClick={() => removeDeliverable(spId, dl.id)} title="Remove" />
-          </div>
-        );
-      })}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
-        <input className="form-input" style={{ width: 150 }} placeholder={`New ${category.toLowerCase()} deliverable`} value={newDl.name} onChange={e => setNewDl({ ...newDl, name: e.target.value })} />
-        <input className="form-input" style={{ width: 100 }} placeholder="Owner" value={newDl.owner} onChange={e => setNewDl({ ...newDl, owner: e.target.value })} />
-        <input type="date" className="form-input" style={{ width: 140 }} value={newDl.dueDate} onChange={e => setNewDl({ ...newDl, dueDate: e.target.value })} />
-        <button className="btn" disabled={!newDl.name.trim()} onClick={() => {
-          if (!newDl.name.trim()) return;
-          addDeliverable(spId, { name: newDl.name, category, owner: newDl.owner || (category === "Sponsor" ? "You" : "Organizer"), dueDate: parseDateInput(newDl.dueDate) || TODAY });
-          setNewDl({ name: "", owner: "", dueDate: "" });
-        }}>+ Add</button>
-      </div>
-    </div>
-  );
-}
-
-function DeliverablesTab({ sp, editMode, cycleDeliverable, editDeliverable, removeDeliverable, addDeliverable }) {
-  const sponsorItems = sp.deliverables.filter(dl => (dl.category || "Sponsor") === "Sponsor");
-  const partnerItems = sp.deliverables.filter(dl => dl.category === "Partner");
-  return (
-    <>
-      <DeliverableSection title="Sponsor Deliverables" hint="What we agree to provide — connectivity, cash, tents, event setup, backdrop printing, giveaways, merch, marketing support."
-        items={sponsorItems} category="Sponsor" editMode={editMode} cycleDeliverable={cycleDeliverable}
-        editDeliverable={editDeliverable} removeDeliverable={removeDeliverable} addDeliverable={addDeliverable} spId={sp.id} />
-      <DeliverableSection title="Partner Deliverables" hint="What the organizer provides in return — sponsorship tier status, logo & branding, social media, complimentary slots, stall space, PR opportunities."
-        items={partnerItems} category="Partner" editMode={editMode} cycleDeliverable={cycleDeliverable}
-        editDeliverable={editDeliverable} removeDeliverable={removeDeliverable} addDeliverable={addDeliverable} spId={sp.id} />
-    </>
-  );
-}
-
-function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, editMode, setEditMode,
-  updateFields, updatePaymentSub, updatePaymentTop, addConnectivity, updateConnectivityItem, removeConnectivityItem,
+function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage,
+  updateFields, updatePaymentSub, updatePaymentTop,
   addDeliverable, removeDeliverable, editDeliverable, setStageDirect, setApproverStatus, resetApprovals,
-  addTask, loadSuggestedTasks, toggleTaskItem, removeTask, deleteSponsorship }) {
+  addTask, loadSuggestedTasks, toggleTaskItem, removeTask, deleteSponsorship, sponsorships }) {
   const followUps = generateFollowUps(sp);
   const stageIdx = STAGES.indexOf(sp.stage);
+  const [newSponsorDl, setNewSponsorDl] = useState({ name: "", dueDate: "", department: "", inKindValue: "", connectivityType: "", deviceReturnDate: "" });
+  const [newPartnerDl, setNewPartnerDl] = useState({ name: "", dueDate: "", inKindValue: "" });
   const [newTask, setNewTask] = useState("");
-  const [newConn, setNewConn] = useState({ type: CONNECTIVITY_TYPES[0] });
+  const [editingDlId, setEditingDlId] = useState(null); // which deliverable row (if any) is currently expanded for editing
   const [confirmDelete, setConfirmDelete] = useState(false);
   const cur = currentApprover(sp);
+  const regions = useMemo(() => distinctValues(sponsorships || [], "region"), [sponsorships]);
+  const eventTypes = useMemo(() => distinctValues(sponsorships || [], "eventType"), [sponsorships]);
+  const sponsorshipTypes = useMemo(() => distinctValues(sponsorships || [], "sponsorshipType"), [sponsorships]);
 
   return (
     <>
       <div className="detail-head">
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
           <button className="btn ghost" onClick={close}><ArrowLeft size={13} /> Close</button>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className={`btn ${editMode ? "primary" : ""}`} onClick={() => setEditMode(!editMode)}>{editMode ? "Done Editing" : "Edit Details"}</button>
-            <button className="close-btn" onClick={close}><X size={14} /></button>
-          </div>
+          <button className="close-btn" onClick={close}><X size={14} /></button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
           <div className="mono" style={{ fontSize: 11, color: "var(--text-faint)" }}>{sp.requestId} {sp.memoNumber && `· ${sp.memoNumber}`}</div>
           <span className={`badge ${computeHealth(sp).cls}`}>{computeHealth(sp).label}</span>
         </div>
 
-        {editMode ? (
-          <input className="form-input disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }} value={sp.eventName} onChange={e => updateFields(sp.id, { eventName: e.target.value })} />
-        ) : <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{sp.eventName}</div>}
-        {editMode ? (
-          <input className="form-input" style={{ marginTop: 4 }} value={sp.organizer} onChange={e => updateFields(sp.id, { organizer: e.target.value })} />
-        ) : <div className="row-sub" style={{ marginTop: 3 }}><Building2 size={11} style={{ verticalAlign: -2, marginRight: 4 }} />{sp.organizer}</div>}
+        <InlineEditField value={sp.eventName} onSave={v => updateFields(sp.id, { eventName: v })}
+          displayClassName="disp" displayStyle={{ fontSize: 18, fontWeight: 700 }} inputStyle={{ fontSize: 16, fontWeight: 700 }} />
+        <div style={{ marginTop: 3, display: "flex", alignItems: "center" }}>
+          <Building2 size={11} style={{ verticalAlign: -2, marginRight: 4, flexShrink: 0 }} />
+          <InlineEditField value={sp.organizer} onSave={v => updateFields(sp.id, { organizer: v })} displayStyle={{ fontSize: 12.5, color: "var(--text-dim)" }} />
+        </div>
 
-        {editMode ? (
-          <div className="form-row" style={{ marginTop: 12 }}>
-            <div className="kv-label">Stage</div>
-            <select className="form-select" value={sp.stage} onChange={e => setStageDirect(sp.id, e.target.value)}>
-              {STAGES.concat(TERMINAL_ONLY).map(st => <option key={st} value={st}>{st}</option>)}
-            </select>
+        {STAGES.includes(sp.stage) && (
+          <div className="stage-track">
+            {STAGES.map((st, i) => (
+              <div key={st} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                <div className={`stage-node ${i < stageIdx ? "done" : i === stageIdx ? "current" : ""}`}>{st}</div>
+                {i < STAGES.length - 1 && <span className="stage-arrow">→</span>}
+              </div>
+            ))}
           </div>
-        ) : (
-          <>
-            {STAGES.includes(sp.stage) && (
-              <div className="stage-track">
-                {STAGES.map((st, i) => (
-                  <div key={st} style={{ display: "flex", alignItems: "center", gap: 3 }}>
-                    <div className={`stage-node ${i < stageIdx ? "done" : i === stageIdx ? "current" : ""}`}>{st}</div>
-                    {i < STAGES.length - 1 && <span className="stage-arrow">→</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-            {!STAGES.includes(sp.stage) && <div style={{ marginTop: 10 }}><span className={`badge ${stageBadgeClass(sp.stage)}`}>{sp.stage}</span></div>}
-            {STAGES.includes(sp.stage) && sp.stage !== "Memo Approval" && (
-              <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-                <button className="btn" onClick={() => advanceStage(sp.id, -1)} disabled={stageIdx === 0}>← Move back</button>
-                <button className="btn" onClick={() => advanceStage(sp.id, 1)} disabled={stageIdx === STAGES.length - 1}>Advance stage →</button>
-                <button className="btn danger" onClick={() => setStageDirect(sp.id, "Rejected")}>Reject</button>
-              </div>
-            )}
-            {sp.stage === "Completed" && <div style={{ marginTop: 8 }}><button className="btn" onClick={() => setStageDirect(sp.id, "Archived")}>Archive</button></div>}
-          </>
         )}
+        {!STAGES.includes(sp.stage) && <div style={{ marginTop: 10 }}><span className={`badge ${stageBadgeClass(sp.stage)}`}>{sp.stage}</span></div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
+          {STAGES.includes(sp.stage) && sp.stage !== "Memo Approval" && (
+            <>
+              <button className="btn" onClick={() => advanceStage(sp.id, -1)} disabled={stageIdx === 0}>← Move back</button>
+              <button className="btn" onClick={() => advanceStage(sp.id, 1)} disabled={stageIdx === STAGES.length - 1}>Advance stage →</button>
+              <button className="btn danger" onClick={() => setStageDirect(sp.id, "Rejected")}>Reject</button>
+            </>
+          )}
+          {sp.stage === "Completed" && <button className="btn" onClick={() => setStageDirect(sp.id, "Archived")}>Archive</button>}
+          <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-faint)", display: "flex", alignItems: "center", gap: 5 }}>
+            Jump to stage:
+            <InlineEditField type="select" value={sp.stage} onSave={v => setStageDirect(sp.id, v)}
+              options={STAGES.concat(TERMINAL_ONLY)} displayStyle={{ fontSize: 11, color: "var(--text-dim)", fontWeight: 600 }} />
+          </div>
+        </div>
 
         <div className="tabs">
-          {["overview", "approvals", "deliverables", "payment", "connectivity", "tasks"].map(t => (
-            <div key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{t.charAt(0).toUpperCase() + t.slice(1)}</div>
+          {[
+            { key: "overview", label: "Overview" },
+            { key: "approvals", label: "Approvals" },
+            { key: "sponsorDeliverables", label: "Sponsor Deliverables" },
+            { key: "partnerDeliverables", label: "Partner Deliverables" },
+            { key: "payment", label: "Payment" },
+            { key: "tasks", label: "Tasks" },
+          ].map(t => (
+            <div key={t.key} className={`tab ${tab === t.key ? "active" : ""}`} onClick={() => setTab(t.key)}>{t.label}</div>
           ))}
         </div>
       </div>
@@ -1773,64 +1940,108 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
               </div>
             )}
 
-            {editMode ? (
+            {(sp.sponsorDeliverables.length > 0 || sp.partnerDeliverables.length > 0) && (
+              <div className="panel" style={{ marginBottom: 16 }}>
+                <div className="panel-head"><div className="panel-title"><ListChecks size={13} /> Deliverables at a Glance</div></div>
+                <div className="panel-body" style={{ display: "flex", gap: 10, padding: "10px 10px", flexWrap: "wrap" }}>
+                  {[
+                    { kind: "sponsor", accent: "var(--signal-info)" },
+                    { kind: "partner", accent: "var(--brand)" },
+                  ].map(({ kind, accent }) => {
+                    const cfg = DELIVERABLE_KIND[kind];
+                    const list = sp[cfg.field] || [];
+                    const done = list.filter(x => x.status === "Done").length;
+                    const overdue = list.filter(x => x.status !== "Done" && daysBetween(TODAY, x.dueDate) > 0).length;
+                    const pct = list.length ? Math.round((done / list.length) * 100) : 0;
+                    return (
+                      <div key={kind} style={{ flex: "1 1 220px", minWidth: 200, background: "var(--panel-2)", borderRadius: 10, padding: "10px 12px", cursor: "pointer" }} onClick={() => setTab(cfg.field)}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                          <span style={{ fontSize: 11.5, fontWeight: 700, color: accent }}>{cfg.short}</span>
+                          {overdue > 0 && <span className="badge crit">{overdue} overdue</span>}
+                        </div>
+                        {list.length ? (
+                          <>
+                            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>{done}/{list.length} complete</span><span>{pct}%</span></div>
+                            <div style={{ height: 6, background: "var(--panel)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: pct === 100 ? "var(--signal-ok)" : accent }} /></div>
+                          </>
+                        ) : <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>Nothing tracked yet</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <datalist id="dl-regions-edit">{regions.map(r => <option key={r} value={r} />)}</datalist>
+            <datalist id="dl-eventtypes-edit">{eventTypes.map(t => <option key={t} value={t} />)}</datalist>
+            <datalist id="dl-sponsorshiptypes-edit">{sponsorshipTypes.map(t => <option key={t} value={t} />)}</datalist>
+
+            <div className="kv-grid">
+              <div><div className="kv-label">Region</div>
+                <InlineEditField value={sp.region} onSave={v => updateFields(sp.id, { region: v })} list="dl-regions-edit" placeholder="Add region"
+                  displayClassName="kv-val" format={v => v ? <><MapPin size={11} style={{ verticalAlign: -1, marginRight: 3 }} />{v}</> : null} />
+              </div>
+              <div><div className="kv-label">Event Type</div>
+                <InlineEditField value={sp.eventType} onSave={v => updateFields(sp.id, { eventType: v })} list="dl-eventtypes-edit" placeholder="Add event type" displayClassName="kv-val" />
+              </div>
+              <div><div className="kv-label">Sponsorship Value</div>
+                <InlineEditField type="select" value={sp.valueType} onSave={v => updateFields(sp.id, { valueType: v })}
+                  options={["Cash", "In-Kind", "Cash + In-Kind"]} displayClassName="kv-val mono" />
+              </div>
+              {sp.valueType !== "In-Kind" && (
+                <div><div className="kv-label">Sponsor Amount (MVR)</div>
+                  <InlineEditField type="number" value={sp.sponsorAmount} onSave={v => updateFields(sp.id, { sponsorAmount: Number(v) || 0 })}
+                    displayClassName="kv-val mono" format={v => fmtMVR(Number(v))} />
+                </div>
+              )}
+              <div><div className="kv-label">Sponsorship Type</div>
+                <InlineEditField value={sp.sponsorshipType} onSave={v => updateFields(sp.id, { sponsorshipType: v })} list="dl-sponsorshiptypes-edit" placeholder="Add sponsorship type" displayClassName="kv-val" />
+              </div>
+              <div><div className="kv-label">Request Received</div><div className="kv-val">{fmtDate(sp.receivedDate)}</div></div>
+              <div><div className="kv-label">Event Date{sp.eventEndDate && !sameDay(sp.eventDate, sp.eventEndDate) ? "s" : ""}</div>
+                <InlineEditField type="date" value={dstr(sp.eventDate)} onSave={v => updateFields(sp.id, { eventDate: parseDateInput(v) || sp.eventDate })}
+                  displayClassName="kv-val" format={() => fmtDateRange(sp.eventDate, sp.eventEndDate)} />
+              </div>
+              <div><div className="kv-label">Event End Date</div>
+                <InlineEditField type="date" value={sp.eventEndDate ? dstr(sp.eventEndDate) : ""} onSave={v => updateFields(sp.id, { eventEndDate: parseDateInput(v) })}
+                  displayClassName="kv-val" placeholder="Single-day"
+                  format={() => spanLabel(sp.eventDate, sp.eventEndDate) ? `${fmtDate(sp.eventEndDate)} (${spanLabel(sp.eventDate, sp.eventEndDate)})` : (sp.eventEndDate ? fmtDate(sp.eventEndDate) : null)} />
+              </div>
+              <div><div className="kv-label">Budget Code</div>
+                <InlineEditField value={sp.budgetCode} onSave={v => updateFields(sp.id, { budgetCode: v })} placeholder="Add budget code" displayClassName="kv-val mono" />
+              </div>
+              <div><div className="kv-label">Duration</div>
+                <InlineEditField value={sp.duration} onSave={v => updateFields(sp.id, { duration: v })} placeholder="Add duration" displayClassName="kv-val" />
+              </div>
+              <div><div className="kv-label">Memo Number</div>
+                <InlineEditField value={sp.memoNumber} onSave={v => updateFields(sp.id, { memoNumber: v })} placeholder="Add memo number" displayClassName="kv-val" />
+              </div>
+            </div>
+
+            {sp.valueType !== "Cash" && (
               <>
-                <div className="form-row-2">
-                  <div><div className="kv-label">Region</div><input className="form-input" value={sp.region} onChange={e => updateFields(sp.id, { region: e.target.value })} /></div>
-                  <div><div className="kv-label">Event Type</div><input className="form-input" value={sp.eventType} onChange={e => updateFields(sp.id, { eventType: e.target.value })} /></div>
-                </div>
-                <div className="form-row">
-                  <div className="kv-label">Sponsorship Value</div>
-                  <select className="form-select" value={sp.valueType} onChange={e => updateFields(sp.id, { valueType: e.target.value })}>
-                    <option value="Cash">Cash</option>
-                    <option value="In-Kind">In-Kind only</option>
-                    <option value="Cash + In-Kind">Cash + In-Kind</option>
-                  </select>
-                </div>
-                {sp.valueType !== "In-Kind" && (
-                  <div className="form-row"><div className="kv-label">Sponsor Amount (MVR)</div><input type="number" className="form-input" value={sp.sponsorAmount} onChange={e => updateFields(sp.id, { sponsorAmount: Number(e.target.value) || 0 })} /></div>
-                )}
-                {sp.valueType !== "Cash" && (
-                  <div className="form-row"><div className="kv-label">In-Kind Details</div><textarea className="form-textarea" value={sp.inKindDetails} onChange={e => updateFields(sp.id, { inKindDetails: e.target.value })} placeholder="Connectivity provided, event support, exposure, etc." /></div>
-                )}
-                <div className="form-row-2">
-                  <div><div className="kv-label">Event Date</div><input type="date" className="form-input" value={dstr(sp.eventDate)} onChange={e => updateFields(sp.id, { eventDate: parseDateInput(e.target.value) || sp.eventDate })} /></div>
-                  <div><div className="kv-label">Budget Code</div><input className="form-input" value={sp.budgetCode} onChange={e => updateFields(sp.id, { budgetCode: e.target.value })} /></div>
-                </div>
-                <div className="form-row-2">
-                  <div><div className="kv-label">Memo Number</div><input className="form-input" value={sp.memoNumber} onChange={e => updateFields(sp.id, { memoNumber: e.target.value })} /></div>
-                  <div><div className="kv-label">Duration</div><input className="form-input" value={sp.duration} onChange={e => updateFields(sp.id, { duration: e.target.value })} /></div>
-                </div>
-                <div className="form-row"><div className="kv-label">Background</div><textarea className="form-textarea" value={sp.background} onChange={e => updateFields(sp.id, { background: e.target.value })} /></div>
-                <div className="form-row"><div className="kv-label">Benefits</div><textarea className="form-textarea" value={sp.benefits} onChange={e => updateFields(sp.id, { benefits: e.target.value })} /></div>
-                <div className="form-row"><div className="kv-label">Justification</div><textarea className="form-textarea" value={sp.justification} onChange={e => updateFields(sp.id, { justification: e.target.value })} /></div>
-                <div className="form-row"><div className="kv-label">Notes</div><textarea className="form-textarea" value={sp.notes} onChange={e => updateFields(sp.id, { notes: e.target.value })} /></div>
-                {!confirmDelete ? <button className="btn danger" onClick={() => setConfirmDelete(true)}>Delete this request</button> : (
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <span style={{ fontSize: 12, color: "var(--text-dim)" }}>Delete permanently?</span>
-                    <button className="btn danger" onClick={() => deleteSponsorship(sp.id)}>Yes, delete</button>
-                    <button className="btn ghost" onClick={() => setConfirmDelete(false)}>Cancel</button>
-                  </div>
-                )}
+                <div className="section-label">In-Kind Details</div>
+                <InlineEditField textarea value={sp.inKindDetails} onSave={v => updateFields(sp.id, { inKindDetails: v })}
+                  placeholder="Connectivity provided, event support, exposure, etc." displayStyle={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6, display: "block" }} />
               </>
-            ) : (
-              <>
-                <div className="kv-grid">
-                  <div><div className="kv-label">Region</div><div className="kv-val"><MapPin size={11} style={{ verticalAlign: -1, marginRight: 3 }} />{sp.region || "—"}</div></div>
-                  <div><div className="kv-label">Event Type</div><div className="kv-val">{sp.eventType || "—"}</div></div>
-                  <div><div className="kv-label">Value</div><div className="kv-val mono">{sp.valueType === "In-Kind" ? "In-Kind" : fmtMVR(sp.sponsorAmount)}{sp.valueType === "Cash + In-Kind" ? " + In-Kind" : ""}</div></div>
-                  <div><div className="kv-label">Sponsorship Type</div><div className="kv-val">{sp.sponsorshipType || "—"}</div></div>
-                  <div><div className="kv-label">Request Received</div><div className="kv-val">{fmtDate(sp.receivedDate)}</div></div>
-                  <div><div className="kv-label">Event Date</div><div className="kv-val">{fmtDate(sp.eventDate)}</div></div>
-                  <div><div className="kv-label">Budget Code</div><div className="kv-val mono">{sp.budgetCode || "—"}</div></div>
-                  <div><div className="kv-label">Duration</div><div className="kv-val">{sp.duration || "—"}</div></div>
-                </div>
-                {sp.inKindDetails && (<><div className="section-label">In-Kind Details</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.inKindDetails}</div></>)}
-                {sp.background && (<><div className="section-label">Background</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.background}</div></>)}
-                {sp.benefits && (<><div className="section-label">Benefits</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.benefits}</div></>)}
-                {sp.justification && (<><div className="section-label">Justification</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.justification}</div></>)}
-                {sp.notes && (<><div className="section-label">Notes</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>{sp.notes}</div></>)}
-              </>
+            )}
+            <div className="section-label">Background</div>
+            <InlineEditField textarea value={sp.background} onSave={v => updateFields(sp.id, { background: v })}
+              placeholder="What is this event, briefly?" displayStyle={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6, display: "block" }} />
+            <div className="section-label">Benefits</div>
+            <InlineEditField textarea value={sp.benefits} onSave={v => updateFields(sp.id, { benefits: v })}
+              placeholder="What do we get out of this sponsorship?" displayStyle={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6, display: "block" }} />
+            <div className="section-label">Justification</div>
+            <InlineEditField textarea value={sp.justification} onSave={v => updateFields(sp.id, { justification: v })}
+              placeholder="Why does this sponsorship make sense?" displayStyle={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6, display: "block" }} />
+            <div style={{ fontSize: 10.5, color: "var(--text-faint)", margin: "10px 0 14px" }}>General notes live on the Tasks tab, alongside to-dos for this sponsorship.</div>
+
+            {!confirmDelete ? <button className="btn danger" onClick={() => setConfirmDelete(true)}>Delete this request</button> : (
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>Delete permanently?</span>
+                <button className="btn danger" onClick={() => deleteSponsorship(sp.id)}>Yes, delete</button>
+                <button className="btn ghost" onClick={() => setConfirmDelete(false)}>Cancel</button>
+              </div>
             )}
           </>
         )}
@@ -1862,15 +2073,134 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
                 </div>
               );
             })}
-            {!cur && sp.stage === "Memo Approval" && <button className="btn ok" style={{ marginTop: 8 }} onClick={() => setStageDirect(sp.id, "Approved")}>Advance to Approved →</button>}
+            {!cur && sp.stage === "Memo Approval" && <button className="btn ok" style={{ marginTop: 8 }} onClick={() => setStageDirect(sp.id, "Execution")}>Advance to Execution →</button>}
             <button className="btn ghost" style={{ marginTop: 8, marginLeft: 8 }} onClick={() => resetApprovals(sp.id)}>Reset approval flow</button>
           </>
         )}
 
-        {tab === "deliverables" && (
-          <DeliverablesTab sp={sp} editMode={editMode} cycleDeliverable={cycleDeliverable}
-            editDeliverable={editDeliverable} removeDeliverable={removeDeliverable} addDeliverable={addDeliverable} />
-        )}
+        {(tab === "sponsorDeliverables" || tab === "partnerDeliverables") && (() => {
+          const kind = tab === "sponsorDeliverables" ? "sponsor" : "partner";
+          const cfg = DELIVERABLE_KIND[kind];
+          const list = sp[cfg.field] || [];
+          const [newDl, setNewDl] = kind === "sponsor" ? [newSponsorDl, setNewSponsorDl] : [newPartnerDl, setNewPartnerDl];
+          const helperText = kind === "sponsor"
+            ? "What we've committed to provide to the partner — connectivity, cash, tents, event setup, backdrop printing, giveaways, merch, marketing support. Owner is always Ooredoo; set a department for internal routing if useful."
+            : "What the partner/organizer has committed to provide us in return — tier status, logo & branding, social media exposure, complimentary slots, stall space, PR opportunities. Owner is always the organizer.";
+          const ownerText = (dl) => kind === "sponsor" ? `Ooredoo${dl.department ? ` · ${dl.department}` : ""}` : sp.organizer;
+          const isHardware = (t) => HARDWARE_TYPES.includes(t);
+
+          return (
+            <>
+              <div className="section-label">{cfg.label}</div>
+              <div style={{ fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.5, marginBottom: 12 }}>{helperText}</div>
+              {list.length === 0 && <div className="panel-empty">No {cfg.label.toLowerCase()} defined yet.</div>}
+              {list.map(dl => {
+                // Overdue = due date has already passed (fixed — was inverted before)
+                const overdue = dl.status !== "Done" && daysBetween(TODAY, dl.dueDate) > 0;
+                const isEditing = editingDlId === dl.id;
+                return (
+                  <div className="check-row" key={dl.id} style={{ alignItems: isEditing ? "flex-start" : "center", background: !isEditing && overdue ? "var(--signal-crit-soft)" : undefined, borderRadius: 8 }}>
+                    <div className={`check-box ${dl.status === "Done" ? "done" : dl.status === "In Progress" ? "progress" : ""}`} style={{ marginTop: isEditing ? 4 : 0 }} onClick={() => cycleDeliverable(sp.id, kind, dl.id)}>
+                      {dl.status === "Done" && <CheckCircle2 size={11} color="#0d1a14" />}
+                      {dl.status === "In Progress" && <Circle size={7} color="var(--signal-warn)" fill="var(--signal-warn)" />}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      {isEditing ? (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+                          <input className="form-input" style={{ width: 170 }} value={dl.name} onChange={e => editDeliverable(sp.id, kind, dl.id, { name: e.target.value })} placeholder="Name" />
+                          <input type="date" className="form-input" style={{ width: 140 }} value={dstr(dl.dueDate)} onChange={e => editDeliverable(sp.id, kind, dl.id, { dueDate: parseDateInput(e.target.value) || dl.dueDate })} />
+                          <select className="form-select" style={{ width: 120 }} value={dl.status} onChange={e => editDeliverable(sp.id, kind, dl.id, { status: e.target.value })}>
+                            {["Pending", "In Progress", "Done"].map(st => <option key={st}>{st}</option>)}
+                          </select>
+                          {kind === "sponsor" && (
+                            <input className="form-input" style={{ width: 150 }} list="dept-suggestions" value={dl.department || ""} onChange={e => editDeliverable(sp.id, kind, dl.id, { department: e.target.value })} placeholder="Department (optional)" />
+                          )}
+                          <input type="number" className="form-input" style={{ width: 130 }} value={dl.inKindValue ?? ""} onChange={e => editDeliverable(sp.id, kind, dl.id, { inKindValue: e.target.value === "" ? null : Number(e.target.value) })} placeholder="In-kind value (MVR)" />
+                          <input className="form-input" style={{ width: 160 }} value={dl.evidence || ""} onChange={e => editDeliverable(sp.id, kind, dl.id, { evidence: e.target.value })} placeholder="Evidence" />
+                          <input className="form-input" style={{ width: 160 }} value={dl.notes || ""} onChange={e => editDeliverable(sp.id, kind, dl.id, { notes: e.target.value })} placeholder="Notes" />
+                          {kind === "sponsor" && (
+                            <>
+                              <select className="form-select" style={{ width: 170 }} value={dl.connectivityType || ""} onChange={e => editDeliverable(sp.id, kind, dl.id, { connectivityType: e.target.value || null, deviceReturnDate: isHardware(e.target.value) ? dl.deviceReturnDate : null, deviceReturnStatus: isHardware(e.target.value) ? dl.deviceReturnStatus : null })}>
+                                <option value="">— Not a connectivity item —</option>
+                                {CONNECTIVITY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                              </select>
+                              {isHardware(dl.connectivityType) && (
+                                <>
+                                  <input type="date" className="form-input" style={{ width: 150 }} value={dstr(dl.deviceReturnDate)} onChange={e => editDeliverable(sp.id, kind, dl.id, { deviceReturnDate: parseDateInput(e.target.value) })} title="Device return date" />
+                                  <select className="form-select" style={{ width: 140 }} value={dl.deviceReturnStatus || ""} onChange={e => editDeliverable(sp.id, kind, dl.id, { deviceReturnStatus: e.target.value || null })}>
+                                    <option value="">Return status…</option>
+                                    <option value="Pending Return">Pending Return</option>
+                                    <option value="Returned">Returned</option>
+                                  </select>
+                                </>
+                              )}
+                            </>
+                          )}
+                          <button className="btn ok" style={{ padding: "6px 10px" }} onClick={() => setEditingDlId(null)}>Done</button>
+                        </div>
+                      ) : (
+                        <>
+                          <div className={`check-label ${dl.status === "Done" ? "done" : ""}`}>{dl.name}{dl.connectivityType ? ` (${dl.connectivityType})` : ""}</div>
+                          <div className="check-meta">
+                            {ownerText(dl)} · Due {fmtDate(dl.dueDate)}
+                            {dl.evidence && ` · Evidence: ${dl.evidence}`}{dl.notes && ` · ${dl.notes}`}
+                            {dl.inKindValue ? ` · In-kind: ${fmtMVR(dl.inKindValue)}` : ""}
+                            {dl.deviceReturnDate && ` · Device return ${fmtDate(dl.deviceReturnDate)}${dl.deviceReturnStatus ? ` (${dl.deviceReturnStatus})` : ""}`}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {!isEditing && <span className={`badge ${overdue ? "crit" : dl.status === "Done" ? "ok" : dl.status === "In Progress" ? "warn" : "neutral"}`}>{overdue ? "Overdue" : dl.status}</span>}
+                    {!isEditing && <Pencil size={13} className="del-x" onClick={() => setEditingDlId(dl.id)} title="Edit deliverable" style={{ marginLeft: 2 }} />}
+                    <X size={14} className="del-x" onClick={() => removeDeliverable(sp.id, kind, dl.id)} title="Remove deliverable" />
+                  </div>
+                );
+              })}
+
+              <datalist id="dept-suggestions">{DEPARTMENT_SUGGESTIONS.map(d => <option key={d} value={d} />)}</datalist>
+
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12 }}>
+                {cfg.presets.map(p => (
+                  <span key={p} className="badge neutral" style={{ cursor: "pointer" }} onClick={() => setNewDl({ ...newDl, name: p, ...(kind === "sponsor" && p === "Connectivity" ? { connectivityType: CONNECTIVITY_TYPES[0] } : {}) })}>{p}</span>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+                <input className="form-input" style={{ width: 170 }} placeholder="Deliverable name" value={newDl.name} onChange={e => setNewDl({ ...newDl, name: e.target.value })} />
+                <input type="date" className="form-input" style={{ width: 140 }} value={newDl.dueDate} onChange={e => setNewDl({ ...newDl, dueDate: e.target.value })} />
+                {kind === "sponsor" && (
+                  <input className="form-input" style={{ width: 160 }} list="dept-suggestions" placeholder="Department (optional)" value={newDl.department} onChange={e => setNewDl({ ...newDl, department: e.target.value })} />
+                )}
+                <input type="number" className="form-input" style={{ width: 150 }} placeholder="In-kind value (MVR)" value={newDl.inKindValue} onChange={e => setNewDl({ ...newDl, inKindValue: e.target.value })} />
+                {kind === "sponsor" && (
+                  <select className="form-select" style={{ width: 180 }} value={newDl.connectivityType} onChange={e => setNewDl({ ...newDl, connectivityType: e.target.value })}>
+                    <option value="">— Not a connectivity item —</option>
+                    {CONNECTIVITY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                )}
+                {kind === "sponsor" && isHardware(newDl.connectivityType) && (
+                  <input type="date" className="form-input" style={{ width: 150 }} title="Device return date" value={newDl.deviceReturnDate} onChange={e => setNewDl({ ...newDl, deviceReturnDate: e.target.value })} />
+                )}
+                <button className="btn" disabled={!newDl.name.trim()} onClick={() => {
+                  if (!newDl.name.trim()) return;
+                  const patch = {
+                    name: newDl.name, dueDate: parseDateInput(newDl.dueDate) || TODAY,
+                    inKindValue: newDl.inKindValue === "" || newDl.inKindValue == null ? null : Number(newDl.inKindValue),
+                  };
+                  if (kind === "sponsor") {
+                    patch.department = newDl.department || "";
+                    patch.connectivityType = newDl.connectivityType || null;
+                    patch.deviceReturnDate = isHardware(newDl.connectivityType) ? (parseDateInput(newDl.deviceReturnDate) || null) : null;
+                    patch.deviceReturnStatus = isHardware(newDl.connectivityType) ? "Pending Return" : null;
+                  }
+                  addDeliverable(sp.id, kind, patch);
+                  setNewDl(kind === "sponsor"
+                    ? { name: "", dueDate: "", department: "", inKindValue: "", connectivityType: "", deviceReturnDate: "" }
+                    : { name: "", dueDate: "", inKindValue: "" });
+                }}>+ Add</button>
+              </div>
+            </>
+          );
+        })()}
 
         {tab === "payment" && sp.payment && (
           <>
@@ -1914,56 +2244,6 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
           </>
         )}
 
-        {tab === "connectivity" && (
-          <>
-            <div className="section-label">Connectivity &amp; Devices</div>
-            {(!sp.connectivity || sp.connectivity.length === 0) && <div className="panel-empty">No connectivity items yet.</div>}
-            {(sp.connectivity || []).map(c => (
-              <div className="conn-item" key={c.id}>
-                <div className="form-row-2">
-                  <div><div className="kv-label">Type</div>
-                    <select className="form-select" value={c.type} onChange={e => updateConnectivityItem(sp.id, c.id, { type: e.target.value, needsReturn: HARDWARE_TYPES.includes(e.target.value) })}>
-                      {CONNECTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
-                    </select>
-                  </div>
-                  <div><div className="kv-label">Technical Team</div><input className="form-input" value={c.technicalTeam} onChange={e => updateConnectivityItem(sp.id, c.id, { technicalTeam: e.target.value })} /></div>
-                </div>
-                <div className="form-row-2">
-                  <div><div className="kv-label">Setup Date</div><input type="date" className="form-input" value={dstr(c.setupDate)} onChange={e => updateConnectivityItem(sp.id, c.id, { setupDate: parseDateInput(e.target.value) })} /></div>
-                  <div><div className="kv-label">Setup Status</div>
-                    <select className="form-select" value={c.setupStatus} onChange={e => updateConnectivityItem(sp.id, c.id, { setupStatus: e.target.value })}>
-                      {["Not Started", "Pending Setup", "Completed"].map(o => <option key={o}>{o}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div className="form-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input type="checkbox" checked={c.needsReturn} onChange={e => updateConnectivityItem(sp.id, c.id, { needsReturn: e.target.checked })} />
-                  <span style={{ fontSize: 12, color: "var(--text-dim)" }}>This item involves hardware that needs to be returned</span>
-                </div>
-                {c.needsReturn && (
-                  <div className="form-row-2">
-                    <div><div className="kv-label">Device Return Date</div><input type="date" className="form-input" value={dstr(c.deviceReturnDate)} onChange={e => updateConnectivityItem(sp.id, c.id, { deviceReturnDate: parseDateInput(e.target.value) })} /></div>
-                    <div><div className="kv-label">Return Status</div>
-                      <select className="form-select" value={c.deviceReturnStatus || ""} onChange={e => updateConnectivityItem(sp.id, c.id, { deviceReturnStatus: e.target.value || null })}>
-                        <option value="">Not yet due</option>
-                        <option value="Pending Return">Pending Return</option>
-                        <option value="Returned">Returned</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-                <button className="btn danger" onClick={() => removeConnectivityItem(sp.id, c.id)}>Remove this item</button>
-              </div>
-            ))}
-            <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
-              <select className="form-select" style={{ width: 200 }} value={newConn.type} onChange={e => setNewConn({ type: e.target.value })}>
-                {CONNECTIVITY_TYPES.map(t => <option key={t}>{t}</option>)}
-              </select>
-              <button className="btn" onClick={() => addConnectivity(sp.id, { type: newConn.type })}>+ Add connectivity item</button>
-            </div>
-          </>
-        )}
-
         {tab === "tasks" && (
           <>
             <div className="section-label">Tasks</div>
@@ -1983,6 +2263,10 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage, e
             {SUGGESTED_TASKS[sp.stage] && (
               <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => loadSuggestedTasks(sp.id, sp.stage)}>Load suggested tasks for "{sp.stage}"</button>
             )}
+
+            <div className="section-label" style={{ marginTop: 20 }}>Notes</div>
+            <textarea className="form-textarea" style={{ minHeight: 90 }} placeholder="General notes about this sponsorship — context, reminders, anything worth flagging for the next person who opens this record…"
+              value={sp.notes || ""} onChange={e => updateFields(sp.id, { notes: e.target.value })} />
           </>
         )}
       </div>
