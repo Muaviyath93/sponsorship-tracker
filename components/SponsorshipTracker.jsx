@@ -223,7 +223,10 @@ const STYLE = `
 `;
 
 /* ============================== DATE HELPERS ============================== */
-const TODAY = new Date(2026, 6, 21); // 21 Jul 2026
+// Normalized to local midnight (matching the d() helper below) so day-difference math
+// stays consistent no matter what time of day the app is loaded.
+const _now = new Date();
+const TODAY = new Date(_now.getFullYear(), _now.getMonth(), _now.getDate());
 const d = (s) => new Date(s + "T00:00:00");
 const daysBetween = (a, b) => Math.round((a - b) / 86400000);
 // Timezone-safe YYYY-MM-DD for <input type="date">. Using toISOString() shifts
@@ -982,17 +985,17 @@ function DashboardView(props) {
   const pendingPaymentsCount = sponsorships.filter(s => s.payment && s.payment.payment.status === "Pending").length;
 
   // Pipeline Overview — how many requests sit at each stage of the simplified funnel.
-  // "Approved" isn't a held stage anymore (auto-advances to Execution once fully signed off),
-  // so it's shown here as a cumulative count of everything that has passed Memo Approval.
+  // Mutually exclusive by stage, so these always sum to the total sponsorship count.
+  // (There's no separate "Approved" bucket — it isn't a held stage, and counting it
+  // alongside Execution/Completed double-counted every project that had moved past
+  // Memo Approval.)
   const pipelineStats = useMemo(() => {
     const counts = { "New Request": 0, "Under Review": 0, "Memo Approval": 0, "Execution": 0, "Completed": 0 };
     sponsorships.forEach(s => { if (counts[s.stage] !== undefined) counts[s.stage]++; });
-    const approved = sponsorships.filter(s => ["Execution", "Completed"].includes(s.stage)).length;
     return [
       { label: "New Requests", num: counts["New Request"], color: "warn" },
       { label: "Under Review", num: counts["Under Review"], color: "warn" },
       { label: "Pending Approval", num: counts["Memo Approval"], color: "info" },
-      { label: "Approved", num: approved, color: "ok" },
       { label: "Execution", num: counts["Execution"], color: "info" },
       { label: "Completed", num: counts["Completed"], color: "ok" },
     ];
@@ -1212,7 +1215,7 @@ function DashboardView(props) {
       <div className="panel" style={{ marginBottom: 16 }}>
         <div className="panel-head"><div className="panel-title"><ListChecks size={13} /> Pipeline Overview</div>
           <div className="panel-title-count">{sponsorships.length} total on file</div></div>
-        <div className="panel-body pad" style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 10 }}>
+        <div className="panel-body pad" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
           {pipelineStats.map(p => {
             const colorMap = { warn: "var(--signal-warn)", info: "var(--signal-info)", crit: "var(--signal-crit)", ok: "var(--signal-ok)" };
             return (
