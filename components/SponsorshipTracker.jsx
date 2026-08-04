@@ -298,6 +298,43 @@ const APPROVAL_CHAIN = [
 function initApprovals() { return APPROVAL_CHAIN.map(a => ({ approver: a, status: "Pending", date: null })); }
 function currentApprover(sp) { return (sp.approvals || []).find(a => a.status === "Pending") || null; }
 
+// Internal "Under Review" checklist — who gets consulted before a request is ready to go
+// into Memo Approval. Brand Manager and CCO are always in the chain; Sales vs B2B
+// Enterprise depends on where the request came from.
+const REQUEST_CATEGORIES = ["General", "Regional Island", "Government / Business Institution"];
+const REVIEW_STEP_DEFS = [
+  { key: "brand_manager", role: "Brand Manager", detail: "Initial interest check", type: "interest", appliesTo: "always" },
+  { key: "sales", role: "Sales Department", detail: "Interest check — regional island request", type: "interest", appliesTo: "Regional Island" },
+  { key: "b2b", role: "B2B Enterprise Department", detail: "Interest check — government/business request", type: "interest", appliesTo: "Government / Business Institution" },
+  { key: "offer", role: "Offer Prepared", detail: "Our offer to the organizer is drafted", type: "milestone", appliesTo: "always" },
+  { key: "cco", role: "CCO", detail: "Final review before moving to Memo Approval", type: "approval", appliesTo: "always" },
+];
+// Cycle a step through its status states when clicked, same interaction as deliverable checkboxes.
+const REVIEW_STEP_CYCLE = {
+  interest: ["Pending", "Interested", "Not Interested"],
+  milestone: ["Pending", "Done"],
+  approval: ["Pending", "Approved", "Rejected"],
+};
+function buildReviewChecklist(category, existing) {
+  const applicable = REVIEW_STEP_DEFS.filter(d => d.appliesTo === "always" || d.appliesTo === category);
+  return applicable.map(d => {
+    const prev = (existing || []).find(x => x.key === d.key);
+    return prev || { key: d.key, role: d.role, detail: d.detail, type: d.type, status: "Pending", date: null, notes: "" };
+  });
+}
+function reviewProgress(sp) {
+  const steps = sp.reviewChecklist || [];
+  const resolved = steps.filter(s => s.status !== "Pending").length;
+  const concerns = steps.filter(s => s.status === "Not Interested" || s.status === "Rejected").length;
+  return { total: steps.length, resolved, concerns };
+}
+function seedResolvedChecklist(category, date) {
+  return buildReviewChecklist(category).map(s => ({
+    ...s, date,
+    status: s.type === "approval" ? "Approved" : s.type === "milestone" ? "Done" : "Interested",
+  }));
+}
+
 const CONNECTIVITY_TYPES = ["ILL Connection", "5G AirFibre", "SIM with Data Package", "SuperNet Connection", "MiFi Device", "Existing SIM Package Upgrade"];
 const HARDWARE_TYPES = ["5G AirFibre", "MiFi Device"]; // types that typically need a device return
 
@@ -353,6 +390,7 @@ const SEED_SPONSORSHIPS = [
     memoNumber: "MEMO-2026-041", budgetCode: "MKT-CSR-0426",
     background: "Children's football festival aimed at grassroots participation across Malé schools.",
     benefits: "Logo on all branding, MC mentions, booth space, social media coverage.", justification: "Aligns with youth & community engagement pillar.", duration: "1 day event",
+    requestCategory: "General", reviewChecklist: seedResolvedChecklist("General", d("2026-07-08")),
     approvals: APPROVAL_CHAIN.map(a => ({ approver: a, status: "Approved", date: d("2026-07-05") })),
     sponsorDeliverables: [
       { id: "sdl1", name: "Tents", department: "Events Team", dueDate: d("2026-08-13"), status: "In Progress", evidence: "", notes: "3 tents confirmed with vendor", inKindValue: 9000 },
@@ -385,6 +423,7 @@ const SEED_SPONSORSHIPS = [
     memoNumber: "MEMO-2026-046", budgetCode: "MKT-CSR-0430",
     background: "Activity day for senior citizens in Malé, anniversary CSR programme.", benefits: "Internal engagement, community goodwill.",
     justification: "Part of 21st anniversary flagship CSR calendar.", duration: "Half day",
+    requestCategory: "General", reviewChecklist: seedResolvedChecklist("General", d("2026-07-13")),
     approvals: [
       { approver: "Brand Manager", status: "Approved", date: d("2026-07-16") },
       { approver: "Financial Controller", status: "Approved", date: d("2026-07-18") },
@@ -407,6 +446,7 @@ const SEED_SPONSORSHIPS = [
     sponsorshipType: "Cash", stage: "Memo Approval", stageEnteredDate: d("2026-07-16"), receivedDate: d("2026-06-28"), eventDate: d("2026-07-28"), eventEndDate: null,
     memoNumber: "MEMO-2026-044", budgetCode: "MKT-REG-0412",
     background: "Regional Eid Al-Adha celebration sponsorship, northern atoll.", benefits: "Branding, VIP mentions.", justification: "Recurring annual regional goodwill sponsorship.", duration: "1 day",
+    requestCategory: "Government / Business Institution", reviewChecklist: seedResolvedChecklist("Government / Business Institution", d("2026-07-14")),
     approvals: [
       { approver: "Brand Manager", status: "Approved", date: d("2026-07-17") },
       { approver: "Financial Controller", status: "Pending", date: null },
@@ -430,6 +470,13 @@ const SEED_SPONSORSHIPS = [
     memoNumber: "", budgetCode: "",
     background: "Multi-atoll swimming championship requiring live results connectivity.", benefits: "Branding, connectivity naming rights, VIP access.",
     justification: "High visibility national sports event.", duration: "3 days",
+    requestCategory: "Regional Island",
+    reviewChecklist: [
+      { key: "brand_manager", role: "Brand Manager", detail: "Initial interest check", type: "interest", status: "Interested", date: d("2026-07-20"), notes: "Keen — good visibility event." },
+      { key: "sales", role: "Sales Department", detail: "Interest check — regional island request", type: "interest", status: "Pending", date: null, notes: "" },
+      { key: "offer", role: "Offer Prepared", detail: "Our offer to the organizer is drafted", type: "milestone", status: "Pending", date: null, notes: "" },
+      { key: "cco", role: "CCO", detail: "Final review before moving to Memo Approval", type: "approval", status: "Pending", date: null, notes: "" },
+    ],
     approvals: initApprovals(),
     sponsorDeliverables: [
       { id: "sdl1", name: "Connectivity", department: "Network Ops", dueDate: d("2026-08-30"), status: "Pending", evidence: "", notes: "", inKindValue: null, connectivityType: "ILL Connection", deviceReturnDate: null, deviceReturnStatus: null },
@@ -445,6 +492,12 @@ const SEED_SPONSORSHIPS = [
     sponsorshipType: "Cash + Connectivity", stage: "Under Review", stageEnteredDate: d("2026-07-12"), receivedDate: d("2026-07-01"), eventDate: d("2026-09-20"), eventEndDate: null,
     memoNumber: "", budgetCode: "",
     background: "Annual flagship marathon, nationwide visibility.", benefits: "Title branding, booth, live connectivity, VIP.", justification: "Highest-reach annual sports sponsorship.", duration: "1 day",
+    requestCategory: "General",
+    reviewChecklist: [
+      { key: "brand_manager", role: "Brand Manager", detail: "Initial interest check", type: "interest", status: "Interested", date: d("2026-07-13"), notes: "" },
+      { key: "offer", role: "Offer Prepared", detail: "Our offer to the organizer is drafted", type: "milestone", status: "Done", date: d("2026-07-17"), notes: "Title sponsorship package sent for review." },
+      { key: "cco", role: "CCO", detail: "Final review before moving to Memo Approval", type: "approval", status: "Pending", date: null, notes: "" },
+    ],
     approvals: initApprovals(),
     sponsorDeliverables: [], partnerDeliverables: [], payment: seedPayment(), notes: "", tasks: [],
   },
@@ -487,6 +540,23 @@ function generateFollowUps(sp) {
       level: daysInStage >= T.approvalCriticalDays ? 4 : daysInStage >= T.approvalUrgentDays ? 3 : 2,
       category: "Approval", owner: "You", sortDate: sp.stageEnteredDate,
     });
+  }
+  if (sp.stage === "Under Review" && sp.reviewChecklist && sp.reviewChecklist.length) {
+    const outstanding = sp.reviewChecklist.filter(s => s.status === "Pending");
+    if (outstanding.length > 0) {
+      items.push({
+        text: `Still waiting on: ${outstanding.map(s => s.role).join(", ")}.`,
+        level: daysInStage >= T.approvalCriticalDays ? 4 : daysInStage >= T.approvalUrgentDays ? 3 : 2,
+        category: "Review Checklist", owner: outstanding[0].role, sortDate: sp.stageEnteredDate,
+      });
+    }
+    const concerns = sp.reviewChecklist.filter(s => s.status === "Not Interested" || s.status === "Rejected");
+    if (concerns.length > 0) {
+      items.push({
+        text: `${concerns.map(s => s.role).join(", ")} flagged concerns during review — worth a second look before proceeding.`,
+        level: 4, category: "Review Checklist", owner: "You", sortDate: sp.stageEnteredDate,
+      });
+    }
   }
 
   if (sp.payment && ["Execution", "Completed"].includes(sp.stage)) {
@@ -678,6 +748,8 @@ export default function SponsorshipTracker() {
       eventDate: data.eventDate ? parseDateInput(data.eventDate) : TODAY,
       eventEndDate: data.eventEndDate ? parseDateInput(data.eventEndDate) : null,
       memoNumber: "", budgetCode: "", background: data.background || "", benefits: "", justification: "", duration: "",
+      requestCategory: data.requestCategory || "General",
+      reviewChecklist: buildReviewChecklist(data.requestCategory || "General"),
       approvals: initApprovals(), sponsorDeliverables: [], partnerDeliverables: [], payment: seedPayment(),
       notes: "", tasks: [],
     };
@@ -756,6 +828,29 @@ export default function SponsorshipTracker() {
   function resetApprovals(spId) {
     setSponsorships(prev => prev.map(s => s.id === spId ? { ...s, approvals: initApprovals() } : s));
   }
+
+  // Changing the request category adds/removes the Sales vs B2B step as needed, while
+  // keeping whatever progress is already logged on the steps that still apply.
+  function setRequestCategory(spId, category) {
+    setSponsorships(prev => prev.map(s => s.id !== spId ? s : { ...s, requestCategory: category, reviewChecklist: buildReviewChecklist(category, s.reviewChecklist) }));
+  }
+  function cycleReviewStep(spId, key) {
+    setSponsorships(prev => prev.map(s => {
+      if (s.id !== spId) return s;
+      return {
+        ...s, reviewChecklist: (s.reviewChecklist || []).map(step => {
+          if (step.key !== key) return step;
+          const cycle = REVIEW_STEP_CYCLE[step.type] || ["Pending", "Done"];
+          const next = cycle[(cycle.indexOf(step.status) + 1) % cycle.length];
+          return { ...step, status: next, date: next === "Pending" ? null : TODAY };
+        })
+      };
+    }));
+  }
+  function updateReviewStep(spId, key, patch) {
+    setSponsorships(prev => prev.map(s => s.id !== spId ? s : { ...s, reviewChecklist: (s.reviewChecklist || []).map(step => step.key === key ? { ...step, ...patch } : step) }));
+  }
+
   function deleteSponsorship(spId) {
     setSponsorships(prev => prev.filter(s => s.id !== spId));
     deleteSponsorshipRow(spId).catch(() => setSaveError(true));
@@ -936,6 +1031,7 @@ export default function SponsorshipTracker() {
               updateFields={updateFields} updatePaymentSub={updatePaymentSub} updatePaymentTop={updatePaymentTop}
               addDeliverable={addDeliverable} removeDeliverable={removeDeliverable} editDeliverable={editDeliverable}
               setStageDirect={setStageDirect} setApproverStatus={setApproverStatus} resetApprovals={resetApprovals}
+              setRequestCategory={setRequestCategory} cycleReviewStep={cycleReviewStep} updateReviewStep={updateReviewStep}
               addTask={addTask} loadSuggestedTasks={loadSuggestedTasks} toggleTaskItem={toggleTaskItem} removeTask={removeTask}
               deleteSponsorship={deleteSponsorship} sponsorships={sponsorships} />
           </div>
@@ -1558,6 +1654,10 @@ function SponsorshipProfilesView({ sponsorships, openDetail }) {
               {s.valueType !== "Cash" && <span className="badge neutral">{s.valueType}</span>}
               {(s.sponsorDeliverables || []).some(x => x.connectivityType) && <span className="badge neutral">Connectivity</span>}
               {spanLabel(s.eventDate, s.eventEndDate) && <span className="badge info">{spanLabel(s.eventDate, s.eventEndDate)}</span>}
+              {s.stage === "Under Review" && s.reviewChecklist && s.reviewChecklist.length > 0 && (() => {
+                const prog = reviewProgress(s);
+                return <span className={`badge ${prog.concerns > 0 ? "crit" : prog.resolved === prog.total ? "ok" : "warn"}`}>Review {prog.resolved}/{prog.total}</span>;
+              })()}
             </div>
             <div style={{ display: "flex", gap: 20, marginBottom: 12 }}>
               <div className="org-stat"><div className="num mono">{s.valueType === "In-Kind" ? "In-Kind" : fmtMVR(s.sponsorAmount)}</div><div className="lbl">Value</div></div>
@@ -1785,7 +1885,7 @@ function MonthCalendar({ events, monthCursor, setMonthCursor, selectedDay, setSe
 
 /* ============================== NEW REQUEST FORM ============================== */
 function NewRequestForm({ onCreate, close, sponsorships }) {
-  const [form, setForm] = useState({ eventName: "", organizer: "", eventType: "", region: "", valueType: "Cash", sponsorAmount: "", inKindDetails: "", sponsorshipType: "", eventDate: "", eventEndDate: "", background: "" });
+  const [form, setForm] = useState({ eventName: "", organizer: "", eventType: "", region: "", valueType: "Cash", sponsorAmount: "", inKindDetails: "", sponsorshipType: "", eventDate: "", eventEndDate: "", background: "", requestCategory: "General" });
   const [prefilled, setPrefilled] = useState(false);
   const set = (k) => (e) => setForm(prev => ({ ...prev, [k]: e.target.value }));
   const canSubmit = form.eventName.trim() && form.organizer.trim();
@@ -1853,6 +1953,13 @@ function NewRequestForm({ onCreate, close, sponsorships }) {
           <div className="form-row"><div className="kv-label">In-Kind Details</div><textarea className="form-textarea" value={form.inKindDetails} onChange={set("inKindDetails")} placeholder="e.g. AirFibre connectivity for the event, on-site technical support, exposure package…" /></div>
         )}
         <div className="form-row"><div className="kv-label">Sponsorship Type</div><input className="form-input" list="dl-sponsorshiptypes" value={form.sponsorshipType} onChange={set("sponsorshipType")} onKeyDown={onEnter} placeholder="Cash / Connectivity / Combination…" /></div>
+        <div className="form-row">
+          <div className="kv-label">Request Category</div>
+          <select className="form-select" value={form.requestCategory} onChange={set("requestCategory")}>
+            {REQUEST_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 4 }}>Determines who's in the internal review checklist — Sales for regional islands, B2B Enterprise for government/business.</div>
+        </div>
         <div className="form-row"><div className="kv-label">Event Date</div><input type="date" className="form-input" value={form.eventDate} onChange={set("eventDate")} /></div>
         <div className="form-row">
           <div className="kv-label">Event End Date (optional)</div>
@@ -1911,6 +2018,7 @@ function SettingsPanel({ thresholds, setThresholds, close, saveError }) {
 function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage,
   updateFields, updatePaymentSub, updatePaymentTop,
   addDeliverable, removeDeliverable, editDeliverable, setStageDirect, setApproverStatus, resetApprovals,
+  setRequestCategory, cycleReviewStep, updateReviewStep,
   addTask, loadSuggestedTasks, toggleTaskItem, removeTask, deleteSponsorship, sponsorships }) {
   const followUps = generateFollowUps(sp);
   const stageIdx = STAGES.indexOf(sp.stage);
@@ -1973,6 +2081,7 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage,
         <div className="tabs">
           {[
             { key: "overview", label: "Overview" },
+            { key: "review", label: "Review" },
             { key: "approvals", label: "Approvals" },
             { key: "sponsorDeliverables", label: "Sponsor Deliverables" },
             { key: "partnerDeliverables", label: "Partner Deliverables" },
@@ -2108,6 +2217,50 @@ function DetailPanel({ sp, tab, setTab, close, cycleDeliverable, advanceStage,
                 <button className="btn ghost" onClick={() => setConfirmDelete(false)}>Cancel</button>
               </div>
             )}
+          </>
+        )}
+
+        {tab === "review" && (
+          <>
+            <div className="section-label">Internal Review Checklist</div>
+            <div style={{ fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.5, marginBottom: 12 }}>
+              Who needs to weigh in before this is ready for Memo Approval — Brand Manager and CCO always apply; Sales or B2B Enterprise depends on where the request came from.
+            </div>
+
+            <div className="form-row" style={{ marginBottom: 14 }}>
+              <div className="kv-label">Request Category</div>
+              <select className="form-select" value={sp.requestCategory || "General"} onChange={e => setRequestCategory(sp.id, e.target.value)}>
+                {REQUEST_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+
+            {(() => {
+              const prog = reviewProgress(sp);
+              return (
+                <div className="panel" style={{ marginBottom: 14, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+                  <span className={`badge ${prog.resolved === prog.total ? "ok" : "warn"}`}>{prog.resolved}/{prog.total} resolved</span>
+                  {prog.concerns > 0 && <span className="badge crit">{prog.concerns} flagged not interested / rejected</span>}
+                </div>
+              );
+            })()}
+
+            {(sp.reviewChecklist || []).map((step, i) => {
+              const cycle = REVIEW_STEP_CYCLE[step.type] || ["Pending", "Done"];
+              const badgeClass = step.status === "Pending" ? "" : (step.status === "Not Interested" || step.status === "Rejected") ? "rejected" : "done";
+              return (
+                <div className="approver-row" key={step.key}>
+                  <div className={`approver-idx ${badgeClass}`} style={{ cursor: "pointer" }} onClick={() => cycleReviewStep(sp.id, step.key)} title="Click to cycle status">{i + 1}</div>
+                  <div style={{ flex: 1 }}>
+                    <div className="approver-name">{step.role}</div>
+                    <div className="approver-date">{step.detail}{step.date ? ` · ${step.status} on ${fmtDate(step.date)}` : ""}</div>
+                    <input className="form-input" style={{ marginTop: 6, fontSize: 11.5 }} placeholder="Notes (optional)" value={step.notes || ""} onChange={e => updateReviewStep(sp.id, step.key, { notes: e.target.value })} />
+                  </div>
+                  <select className="form-select" style={{ width: 150 }} value={step.status} onChange={e => updateReviewStep(sp.id, step.key, { status: e.target.value, date: e.target.value === "Pending" ? null : TODAY })}>
+                    {cycle.map(st => <option key={st} value={st}>{st}</option>)}
+                  </select>
+                </div>
+              );
+            })}
           </>
         )}
 
