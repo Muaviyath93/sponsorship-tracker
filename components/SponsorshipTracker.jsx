@@ -506,7 +506,7 @@ const SEED_SPONSORSHIPS = [
 /* ============================== FOLLOW-UP ENGINE ============================== */
 const DEFAULT_THRESHOLDS = {
   approvalWarnDays: 3, approvalUrgentDays: 4, approvalCriticalDays: 6,
-  connectivityWindowDays: 7, connectivityCriticalDays: 2,
+  connectivityWindowDays: 7,
   eventApprovalWindowDays: 5,
 };
 let THRESHOLDS = { ...DEFAULT_THRESHOLDS };
@@ -577,10 +577,14 @@ function generateFollowUps(sp) {
 
   // Connectivity items now live inside Sponsor Deliverables (identified by a connectivityType) —
   // still get their own early-warning window ahead of the event, plus device-return tracking.
+  // This is a proactive heads-up, not a problem report — setup one or two days before an
+  // event is often normal and outside our control, so it never escalates to Critical on its
+  // own. The only thing that pushes a deliverable to Critical is its own due date passing
+  // (see the generic overdue check just below), not how close the event is.
   (sp.sponsorDeliverables || []).forEach((dl) => {
     if (!dl.connectivityType) return;
     if (dl.status !== "Done" && daysToEvent >= 0 && daysToEvent <= T.connectivityWindowDays) {
-      items.push({ text: `${dl.connectivityType} setup due in ${daysToEvent} day${daysToEvent === 1 ? "" : "s"}.`, level: daysToEvent <= T.connectivityCriticalDays ? 4 : 3, category: "Sponsor Deliverables", owner: dl.department || "Technical Team", sortDate: dl.dueDate || sp.eventDate });
+      items.push({ text: `${dl.connectivityType} setup due in ${daysToEvent} day${daysToEvent === 1 ? "" : "s"}.`, level: 2, category: "Sponsor Deliverables", owner: dl.department || "Technical Team", sortDate: dl.dueDate || sp.eventDate });
     }
     if (dl.deviceReturnDate && dl.deviceReturnStatus !== "Returned") {
       const overdue = daysBetween(TODAY, dl.deviceReturnDate);
@@ -588,6 +592,8 @@ function generateFollowUps(sp) {
     }
   });
 
+  // The only path to Critical for a deliverable: its due date has actually passed.
+  // Being due soon (even the same day as the event) is not, by itself, critical.
   Object.values(DELIVERABLE_KIND).forEach(({ field, label }) => {
     const list = sp[field];
     if (list && list.length) {
@@ -1625,66 +1631,91 @@ function PipelineView({ sponsorships, stageFilter, setStageFilter, openDetail })
 
 /* ============================== SPONSORSHIP PROFILES ============================== */
 function SponsorshipProfilesView({ sponsorships, openDetail }) {
+  const [sortDir, setSortDir] = useState("forward"); // "forward" = Review → Completion, "reverse" = Completion → Review
+  const stageOrder = STAGES.concat(TERMINAL_ONLY);
+  const orderedStages = sortDir === "forward" ? stageOrder : [...stageOrder].reverse();
+  const groups = orderedStages
+    .map(stage => ({ stage, items: sponsorships.filter(s => s.stage === stage) }))
+    .filter(g => g.items.length > 0);
+
   return (
-    <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
-      {sponsorships.map(s => {
-        const sponsorDone = (s.sponsorDeliverables || []).filter(dl => dl.status === "Done").length;
-        const sponsorTotal = (s.sponsorDeliverables || []).length;
-        const sponsorPct = sponsorTotal ? Math.round((sponsorDone / sponsorTotal) * 100) : 0;
-        const partnerDone = (s.partnerDeliverables || []).filter(dl => dl.status === "Done").length;
-        const partnerTotal = (s.partnerDeliverables || []).length;
-        const partnerPct = partnerTotal ? Math.round((partnerDone / partnerTotal) * 100) : 0;
-        const followUps = generateFollowUps(s);
-        const h = computeHealth(s);
-        const daysToEvent = daysBetween(s.eventDate, TODAY);
-        const initials = s.organizer.split(" ").slice(0, 2).map(w => w[0]).join("");
-        return (
-          <div className="org-card" key={s.id} style={{ cursor: "pointer" }} onClick={() => openDetail(s.id)}>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
-              <div className="mono" style={{ fontSize: 10.5, color: "var(--text-faint)" }}>{s.requestId}</div>
-              <span className={`badge ${h.cls}`}>{h.label}</span>
-            </div>
-            <div className="row-title" style={{ fontSize: 13.5, marginBottom: 3 }}>{s.eventName}</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
-              <div className="org-avatar" style={{ width: 22, height: 22, fontSize: 9.5, borderRadius: 6 }}>{initials}</div>
-              <div className="row-sub" style={{ margin: 0 }}>{s.organizer}</div>
-            </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-              <span className={`badge ${stageBadgeClass(s.stage)}`}>{s.stage}</span>
-              {s.valueType !== "Cash" && <span className="badge neutral">{s.valueType}</span>}
-              {(s.sponsorDeliverables || []).some(x => x.connectivityType) && <span className="badge neutral">Connectivity</span>}
-              {spanLabel(s.eventDate, s.eventEndDate) && <span className="badge info">{spanLabel(s.eventDate, s.eventEndDate)}</span>}
-              {s.stage === "Under Review" && s.reviewChecklist && s.reviewChecklist.length > 0 && (() => {
-                const prog = reviewProgress(s);
-                return <span className={`badge ${prog.concerns > 0 ? "crit" : prog.resolved === prog.total ? "ok" : "warn"}`}>Review {prog.resolved}/{prog.total}</span>;
-              })()}
-            </div>
-            <div style={{ display: "flex", gap: 20, marginBottom: 12 }}>
-              <div className="org-stat"><div className="num mono">{s.valueType === "In-Kind" ? "In-Kind" : fmtMVR(s.sponsorAmount)}</div><div className="lbl">Value</div></div>
-              <div className="org-stat" title={fmtDateRange(s.eventDate, s.eventEndDate)}><div className="num">{daysToEvent >= 0 ? `${daysToEvent}d` : "Past"}</div><div className="lbl">{daysToEvent >= 0 ? "To Event" : "Event Date"}</div></div>
-            </div>
-            {(sponsorTotal > 0 || partnerTotal > 0) && (
-              <div style={{ marginBottom: 10, display: "flex", flexDirection: "column", gap: 7 }}>
-                {sponsorTotal > 0 && (
-                  <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>Our Deliverables</span><span>{sponsorDone}/{sponsorTotal}</span></div>
-                    <div style={{ height: 6, background: "var(--panel-2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${sponsorPct}%`, height: "100%", background: sponsorPct === 100 ? "var(--signal-ok)" : "var(--signal-info)" }} /></div>
-                  </div>
-                )}
-                {partnerTotal > 0 && (
-                  <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>Partner Deliverables</span><span>{partnerDone}/{partnerTotal}</span></div>
-                    <div style={{ height: 6, background: "var(--panel-2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${partnerPct}%`, height: "100%", background: partnerPct === 100 ? "var(--signal-ok)" : "var(--brand)" }} /></div>
-                  </div>
-                )}
-              </div>
-            )}
-            {followUps.length > 0 ? (
-              <div className="row-sub" style={{ lineHeight: 1.5 }}>{followUps[0].text} <span style={{ color: "var(--text-faint)" }}>(owner: {followUps[0].owner})</span>{followUps.length > 1 ? ` +${followUps.length - 1} more` : ""}</div>
-            ) : <div className="row-sub">No open follow-ups.</div>}
+    <div>
+      <div className="list-view-toolbar">
+        <div className={`filter-chip ${sortDir === "forward" ? "active" : ""}`} onClick={() => setSortDir("forward")}>Review → Completion</div>
+        <div className={`filter-chip ${sortDir === "reverse" ? "active" : ""}`} onClick={() => setSortDir("reverse")}>Completion → Review</div>
+      </div>
+
+      {groups.length === 0 && <div className="panel-empty">No sponsorships to show.</div>}
+
+      {groups.map(g => (
+        <div key={g.stage} style={{ marginBottom: 22 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <span className={`badge ${stageBadgeClass(g.stage)}`}>{g.stage}</span>
+            <span style={{ fontSize: 11, color: "var(--text-faint)" }}>{g.items.length} sponsorship{g.items.length === 1 ? "" : "s"}</span>
+            <div style={{ flex: 1, height: 1, background: "var(--line-soft)" }} />
           </div>
-        );
-      })}
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
+            {g.items.map(s => {
+              const sponsorDone = (s.sponsorDeliverables || []).filter(dl => dl.status === "Done").length;
+              const sponsorTotal = (s.sponsorDeliverables || []).length;
+              const sponsorPct = sponsorTotal ? Math.round((sponsorDone / sponsorTotal) * 100) : 0;
+              const partnerDone = (s.partnerDeliverables || []).filter(dl => dl.status === "Done").length;
+              const partnerTotal = (s.partnerDeliverables || []).length;
+              const partnerPct = partnerTotal ? Math.round((partnerDone / partnerTotal) * 100) : 0;
+              const followUps = generateFollowUps(s);
+              const h = computeHealth(s);
+              const daysToEvent = daysBetween(s.eventDate, TODAY);
+              const initials = s.organizer.split(" ").slice(0, 2).map(w => w[0]).join("");
+              return (
+                <div className="org-card" key={s.id} style={{ cursor: "pointer" }} onClick={() => openDetail(s.id)}>
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
+                    <div className="mono" style={{ fontSize: 10.5, color: "var(--text-faint)" }}>{s.requestId}</div>
+                    <span className={`badge ${h.cls}`}>{h.label}</span>
+                  </div>
+                  <div className="row-title" style={{ fontSize: 13.5, marginBottom: 3 }}>{s.eventName}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
+                    <div className="org-avatar" style={{ width: 22, height: 22, fontSize: 9.5, borderRadius: 6 }}>{initials}</div>
+                    <div className="row-sub" style={{ margin: 0 }}>{s.organizer}</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+                    <span className={`badge ${stageBadgeClass(s.stage)}`}>{s.stage}</span>
+                    {s.valueType !== "Cash" && <span className="badge neutral">{s.valueType}</span>}
+                    {(s.sponsorDeliverables || []).some(x => x.connectivityType) && <span className="badge neutral">Connectivity</span>}
+                    {spanLabel(s.eventDate, s.eventEndDate) && <span className="badge info">{spanLabel(s.eventDate, s.eventEndDate)}</span>}
+                    {s.stage === "Under Review" && s.reviewChecklist && s.reviewChecklist.length > 0 && (() => {
+                      const prog = reviewProgress(s);
+                      return <span className={`badge ${prog.concerns > 0 ? "crit" : prog.resolved === prog.total ? "ok" : "warn"}`}>Review {prog.resolved}/{prog.total}</span>;
+                    })()}
+                  </div>
+                  <div style={{ display: "flex", gap: 20, marginBottom: 12 }}>
+                    <div className="org-stat"><div className="num mono">{s.valueType === "In-Kind" ? "In-Kind" : fmtMVR(s.sponsorAmount)}</div><div className="lbl">Value</div></div>
+                    <div className="org-stat" title={fmtDateRange(s.eventDate, s.eventEndDate)}><div className="num">{daysToEvent >= 0 ? `${daysToEvent}d` : "Past"}</div><div className="lbl">{daysToEvent >= 0 ? "To Event" : "Event Date"}</div></div>
+                  </div>
+                  {(sponsorTotal > 0 || partnerTotal > 0) && (
+                    <div style={{ marginBottom: 10, display: "flex", flexDirection: "column", gap: 7 }}>
+                      {sponsorTotal > 0 && (
+                        <div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>Our Deliverables</span><span>{sponsorDone}/{sponsorTotal}</span></div>
+                          <div style={{ height: 6, background: "var(--panel-2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${sponsorPct}%`, height: "100%", background: sponsorPct === 100 ? "var(--signal-ok)" : "var(--signal-info)" }} /></div>
+                        </div>
+                      )}
+                      {partnerTotal > 0 && (
+                        <div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-faint)", marginBottom: 4 }}><span>Partner Deliverables</span><span>{partnerDone}/{partnerTotal}</span></div>
+                          <div style={{ height: 6, background: "var(--panel-2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${partnerPct}%`, height: "100%", background: partnerPct === 100 ? "var(--signal-ok)" : "var(--brand)" }} /></div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {followUps.length > 0 ? (
+                    <div className="row-sub" style={{ lineHeight: 1.5 }}>{followUps[0].text} <span style={{ color: "var(--text-faint)" }}>(owner: {followUps[0].owner})</span>{followUps.length > 1 ? ` +${followUps.length - 1} more` : ""}</div>
+                  ) : <div className="row-sub">No open follow-ups.</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1978,8 +2009,7 @@ const THRESHOLD_FIELDS = [
   { key: "approvalWarnDays", label: "Flag a stalled approval step after (days)", group: "Approvals" },
   { key: "approvalUrgentDays", label: "Escalate to Urgent after (days)", group: "Approvals" },
   { key: "approvalCriticalDays", label: "Escalate to Critical after (days)", group: "Approvals" },
-  { key: "connectivityWindowDays", label: "Start warning about setup this many days before the event", group: "Connectivity (Sponsor Deliverables)" },
-  { key: "connectivityCriticalDays", label: "Escalate setup warning to Critical inside (days)", group: "Connectivity (Sponsor Deliverables)" },
+  { key: "connectivityWindowDays", label: "Start a heads-up reminder this many days before the event (never escalates to Critical on its own)", group: "Connectivity (Sponsor Deliverables)" },
   { key: "eventApprovalWindowDays", label: "Flag unapproved requests once event is within (days)", group: "Deadlines" },
 ];
 
